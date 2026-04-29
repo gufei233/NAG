@@ -219,9 +219,9 @@ Please run the following command to download new browsers:
 本 compose 已经把 `/ms-playwright` 挂到 `gscore-playwright` volume。首次使用 XutheringWavesUID 渲染功能前，建议执行一次：
 
 ```bash
-docker compose up -d gscore
+docker compose up -d --force-recreate gscore
 docker compose --profile init run --rm gscore-xwuid-deps-init
-docker restart nag-gscore
+docker compose up -d --force-recreate gscore
 ```
 
 这会运行：
@@ -232,6 +232,8 @@ uv run --python /venv/bin/python playwright install chromium
 ```
 
 Python 包会安装到 `gscore-venv` volume，浏览器文件会保存在 `gscore-playwright` volume 中。执行 `docker compose down -v` 会删除这些 volume，之后需要重新运行上面的初始化命令。
+
+如果你是从旧版 compose 更新而来，务必使用上面的 `--force-recreate` 重建 `gscore` 服务。`docker restart nag-gscore` 只会重启旧容器，不会应用后来新增的 `/ms-playwright` volume 和 `PLAYWRIGHT_BROWSERS_PATH` 环境变量，容易出现依赖初始化成功但 GsCore 仍找不到浏览器的情况。
 
 插件安装后，建议在 GsCore / AstrBot 重启完成并联通后再做插件初始化：
 
