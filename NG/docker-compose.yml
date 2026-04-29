@@ -1,0 +1,117 @@
+name: ng
+
+x-common-env: &common-env
+  TZ: ${TZ:-Asia/Shanghai}
+
+services:
+  gscore:
+    image: ${GSCORE_IMAGE:-docker.cnb.cool/gscore-mirror/gsuid_core:latest}
+    container_name: ng-gscore
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      PYTHONUNBUFFERED: "1"
+      UV_INDEX: ${GSCORE_PYTHON_INDEX:-https://pypi.org/simple/}
+      UV_NO_CONFIG: ${UV_NO_CONFIG:-0}
+      http_proxy: ${GSCORE_HTTP_PROXY:-}
+      https_proxy: ${GSCORE_HTTPS_PROXY:-}
+      no_proxy: ${GSCORE_NO_PROXY:-localhost,127.0.0.1,gscore,napcat,.local,cnb.cool,mirrors.aliyun.com,pypi.tuna.tsinghua.edu.cn,mirrors.volces.com}
+    ports:
+      - "${BIND_IP:-127.0.0.1}:${GSCORE_PORT:-8765}:8765"
+    volumes:
+      - ${DATA_ROOT:-/opt/ng-data}/gscore/data:/gsuid_core/data
+      - ${DATA_ROOT:-/opt/ng-data}/gscore/plugins:/gsuid_core/gsuid_core/plugins
+      - gscore-venv:/venv
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - ng-net
+
+  napcat:
+    image: ${NAPCAT_IMAGE:-mlikiowa/napcat-docker:latest}
+    container_name: ng-napcat
+    restart: unless-stopped
+    environment:
+      NAPCAT_UID: ${NAPCAT_UID:-1000}
+      NAPCAT_GID: ${NAPCAT_GID:-1000}
+    ports:
+      - "${BIND_IP:-127.0.0.1}:${NAPCAT_WEBUI_PORT:-6099}:6099"
+    volumes:
+      - ${DATA_ROOT:-/opt/ng-data}/napcat/config:/app/napcat/config
+      - ${DATA_ROOT:-/opt/ng-data}/napcat/plugins:/app/napcat/plugins
+      - ${DATA_ROOT:-/opt/ng-data}/napcat/qq:/app/.config/QQ
+    depends_on:
+      - gscore
+    networks:
+      - ng-net
+
+  napcat-gscore-adapter-init:
+    image: alpine:latest
+    container_name: ng-napcat-gscore-adapter-init
+    profiles:
+      - init
+    environment:
+      NAPCAT_GSCORE_ADAPTER_ZIP_URL: ${NAPCAT_GSCORE_ADAPTER_ZIP_URL:-}
+    entrypoint:
+      - /bin/sh
+      - -lc
+    command:
+      - |
+        set -eu
+        if [ -z "$$NAPCAT_GSCORE_ADAPTER_ZIP_URL" ]; then
+          echo "Set NAPCAT_GSCORE_ADAPTER_ZIP_URL in .env or install the plugin from NapCat WebUI."
+          exit 1
+        fi
+
+        apk add --no-cache curl unzip
+        mkdir -p /plugins
+        curl -fsSL "$$NAPCAT_GSCORE_ADAPTER_ZIP_URL" -o /tmp/napcat-plugin-gscore-adapter.zip
+        unzip -o /tmp/napcat-plugin-gscore-adapter.zip -d /plugins
+        echo "NapCat GScore adapter plugin extracted to /app/napcat/plugins."
+    volumes:
+      - ${DATA_ROOT:-/opt/ng-data}/napcat/plugins:/plugins
+    networks:
+      - ng-net
+
+  gscore-plugin-init:
+    image: alpine/git:latest
+    container_name: ng-gscore-plugin-init
+    profiles:
+      - init
+    entrypoint:
+      - /bin/sh
+      - -lc
+    command:
+      - |
+        set -eu
+        mkdir -p /plugins
+
+        clone_or_update() {
+          repo="$$1"
+          dir="$$2"
+          target="/plugins/$$dir"
+
+          if [ -d "$$target/.git" ]; then
+            git -C "$$target" pull --ff-only
+          elif [ -e "$$target" ]; then
+            echo "Skip $$target: exists but is not a git repo"
+          else
+            git clone --depth=1 "$$repo" "$$target"
+          fi
+        }
+
+        clone_or_update ${XUTHERINGWAVESUID_REPO:-https://github.com/Loping151/XutheringWavesUID.git} XutheringWavesUID
+        clone_or_update ${ROVERSIGN_REPO:-https://github.com/Loping151/RoverSign.git} RoverSign
+        clone_or_update ${SCOREECHO_REPO:-https://github.com/Loping151/ScoreEcho.git} ScoreEcho
+    volumes:
+      - ${DATA_ROOT:-/opt/ng-data}/gscore/plugins:/plugins
+    networks:
+      - ng-net
+
+networks:
+  ng-net:
+    driver: bridge
+
+volumes:
+  gscore-venv:
+

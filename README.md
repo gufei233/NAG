@@ -10,6 +10,23 @@ GsCore <-> AstrBot <-> NapCatQQ <-> QQ
 
 如果你使用 QQ 官方机器人，或强依赖 NoneBot2 插件生态，请参考完整教程里的 NoneBot2 路线；本 compose 不包含 NoneBot2。
 
+## 路线选择
+
+本仓库现在提供两套 compose：
+
+```text
+NAG: GsCore <-> AstrBot <-> NapCatQQ
+NG:  GsCore <-> NapCat 插件 <-> NapCatQQ
+```
+
+- 默认使用本页的 NAG 版本：适合需要 AstrBot 的 LLM、WebUI 管理、多平台能力，或希望通过 AstrBot 统一接入 GsCore 的用户。
+- 可选使用 [NG 轻量版本](NG/README.md)：适合不需要 AstrBot，只想让 NapCat 通过协议端插件直接连接 GsCore 的用户。
+
+NG 版本文件：
+
+- [NG/docker-compose.yml](NG/docker-compose.yml)
+- [NG/README.md](NG/README.md)
+
 ## 组件
 
 - **GsCore / GenshinUID Core**：游戏数据查询、面板渲染、签到、插件管理等核心能力。
