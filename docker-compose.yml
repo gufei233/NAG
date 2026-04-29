@@ -1,71 +1,134 @@
-# gsuid_core Docker Compose 配置
-# 部署方式: 本地构建 (挂载模式)
+name: nag
+
+x-common-env: &common-env
+  TZ: ${TZ:-Asia/Shanghai}
 
 services:
-  gsuid_core:
-    build:
-      context: .
-      target: ${GSCORE_BUILD_TARGET:-runtime}
-      args:
-        - GSCORE_BASE_IMAGE=${GSCORE_BASE_IMAGE:-docker.cnb.cool/gscore-mirror/docker-sync/astral-uv:python3.12-bookworm-slim}
-        - GSCORE_PYTHON_INDEX=${GSCORE_PYTHON_INDEX:-https://pypi.org/simple}
-
-    image: gsuid-core:${GSCORE_BUILD_TARGET:-runtime}
-    container_name: gsuid_core
-    ports:
-      - "${PORT:-8765}:8765"
-    volumes:
-      - ${MOUNT_PATH:-.}:/gsuid_core
-      - venv-data:/venv
+  gscore:
+    image: docker.cnb.cool/gscore-mirror/gsuid_core:latest
+    container_name: nag-gscore
     restart: unless-stopped
+    environment:
+      <<: *common-env
+      PYTHONUNBUFFERED: "1"
+      UV_INDEX: ${GSCORE_PYTHON_INDEX:-https://pypi.org/simple/}
+      UV_NO_CONFIG: ${UV_NO_CONFIG:-0}
+      http_proxy: ${GSCORE_HTTP_PROXY:-}
+      https_proxy: ${GSCORE_HTTPS_PROXY:-}
+      no_proxy: ${GSCORE_NO_PROXY:-localhost,127.0.0.1,gscore,astrbot,napcat,.local,cnb.cool,mirrors.aliyun.com,pypi.tuna.tsinghua.edu.cn,mirrors.volces.com}
+    ports:
+      - "${BIND_IP:-127.0.0.1}:${GSCORE_PORT:-8765}:8765"
+    volumes:
+      - ./data/gscore/data:/gsuid_core/data
+      - ./data/gscore/plugins:/gsuid_core/gsuid_core/plugins
+      - gscore-venv:/venv
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    environment:
-      - PYTHONUNBUFFERED=1
-      - UV_INDEX=${GSCORE_PYTHON_INDEX:-}
-      - UV_NO_CONFIG=${UV_NO_CONFIG:-}
-      - http_proxy=${GSCORE_HTTP_PROXY:-}
-      - https_proxy=${GSCORE_HTTPS_PROXY:-}
-      - no_proxy=${GSCORE_NO_PROXY:-localhost,127.0.0.1,172.0.0.1,astrbot,napcat,.local,cnb.cool,mirrors.aliyun.com,pypi.tuna.tsinghua.edu.cn,mirrors.volces.com}
-      - PATH=/root/.nvm/versions/node/v24.14.1/bin:${PATH}
     networks:
-      - bot_network
-
-  napcat:
-    container_name: napcat
-    image: mlikiowa/napcat-docker:v4.17.50
-    environment:
-      - NAPCAT_UID=1000
-      - NAPCAT_GID=root
-    ports:
-      - 3000:3000
-      - 3001:3001
-      - 6099:6099
-    restart: always
-    volumes:
-      - ./data/qq:/app/.config/QQ
-      - ./data/napcat:/app/napcat/config
-    networks:
-      - bot_network
+      - nag-net
 
   astrbot:
+    image: ${ASTRBOT_IMAGE:-soulter/astrbot:latest}
+    container_name: nag-astrbot
+    restart: unless-stopped
     environment:
-      - TZ=Asia/Shanghai
-    image: soulter/astrbot:v4.22.0
-    container_name: astrbot
-    restart: always
+      <<: *common-env
     ports:
-      - "6185:6185"
-      - "6195:6195"
-      - "6199:6199"
+      - "${BIND_IP:-127.0.0.1}:${ASTRBOT_WEBUI_PORT:-6185}:6185"
+      # 同 Docker 网络下 NapCat 可直接连 ws://astrbot:6199/ws，不必暴露到宿主机。
+      # 若你要从宿主机或外部调试 OneBot 反向 WS，再取消下一行注释。
+      # - "${BIND_IP:-127.0.0.1}:${ASTRBOT_ONEBOT_PORT:-6199}:6199"
+    expose:
+      - "6199"
     volumes:
-      - ./data/AstrBot/data:/AstrBot/data
+      - ./data/astrbot:/AstrBot/data
+    depends_on:
+      - gscore
     networks:
-      - bot_network
+      - nag-net
+
+  napcat:
+    image: ${NAPCAT_IMAGE:-mlikiowa/napcat-docker:latest}
+    container_name: nag-napcat
+    restart: unless-stopped
+    mac_address: ${NAPCAT_MAC:-02:42:ac:11:00:02}
+    environment:
+      NAPCAT_UID: ${NAPCAT_UID:-1000}
+      NAPCAT_GID: ${NAPCAT_GID:-1000}
+      # NapCat-Docker 官方给 AstrBot 场景使用的模式；仍建议首次进入 WebUI 核对网络配置。
+      MODE: astrbot
+    ports:
+      - "${BIND_IP:-127.0.0.1}:${NAPCAT_WEBUI_PORT:-6099}:6099"
+      # 通常不需要暴露 3000/3001；只有你要外部调用 NapCat HTTP/正向 WS 时再开启。
+      # - "${BIND_IP:-127.0.0.1}:3000:3000"
+      # - "${BIND_IP:-127.0.0.1}:3001:3001"
+    volumes:
+      # 和 AstrBot 共享 data，方便文件、语音、图片等消息素材互通。
+      - ./data/astrbot:/AstrBot/data
+      - ./data/napcat/config:/app/napcat/config
+      - ./data/napcat/qq:/app/.config/QQ
+    depends_on:
+      - astrbot
+    networks:
+      - nag-net
+
+  # 可选：初始化/更新 AstrBot 的 GsCore 适配器插件。
+  astrbot-plugin-init:
+    image: alpine/git:latest
+    container_name: nag-astrbot-plugin-init
+    profiles: ["init"]
+    entrypoint: ["/bin/sh", "-lc"]
+    command: |
+      set -eu
+      mkdir -p /AstrBot/data/plugins
+      clone_or_update() {
+        repo="$1"
+        dir="$2"
+        if [ -d "/AstrBot/data/plugins/$dir/.git" ]; then
+          git -C "/AstrBot/data/plugins/$dir" pull --ff-only
+        elif [ -e "/AstrBot/data/plugins/$dir" ]; then
+          echo "Skip /AstrBot/data/plugins/$dir: exists but is not a git repo"
+        else
+          git clone --depth=1 "$repo" "/AstrBot/data/plugins/$dir"
+        fi
+      }
+      clone_or_update https://github.com/KimigaiiWuyi/astrbot_plugin_gscore_adapter.git astrbot_plugin_gscore_adapter
+    volumes:
+      - ./data/astrbot:/AstrBot/data
+    networks:
+      - nag-net
+
+  # 可选：初始化/更新 GsCore 插件。
+  gscore-plugin-init:
+    image: alpine/git:latest
+    container_name: nag-gscore-plugin-init
+    profiles: ["init"]
+    entrypoint: ["/bin/sh", "-lc"]
+    command: |
+      set -eu
+      mkdir -p /plugins
+      clone_or_update() {
+        repo="$1"
+        dir="$2"
+        if [ -d "/plugins/$dir/.git" ]; then
+          git -C "/plugins/$dir" pull --ff-only
+        elif [ -e "/plugins/$dir" ]; then
+          echo "Skip /plugins/$dir: exists but is not a git repo"
+        else
+          git clone --depth=1 "$repo" "/plugins/$dir"
+        fi
+      }
+      clone_or_update https://github.com/Loping151/XutheringWavesUID.git XutheringWavesUID
+      clone_or_update https://github.com/Loping151/RoverSign.git RoverSign
+      clone_or_update https://github.com/Loping151/ScoreEcho.git ScoreEcho
+    volumes:
+      - ./data/gscore/plugins:/plugins
+    networks:
+      - nag-net
 
 networks:
-  bot_network:
+  nag-net:
     driver: bridge
 
 volumes:
-  venv-data:
+  gscore-venv:
