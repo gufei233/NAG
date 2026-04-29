@@ -376,14 +376,33 @@ GsCore 插件仓库默认使用 GitHub；如果 GitHub 较慢，可改用 `https
 
 本 compose 默认不设置 `mac_address`。
 
-固定 MAC 可能降低某些单人私有部署里的重复登录摩擦，但不适合作为公开模板默认值，因为所有用户都会从同一个 MAC 开始。
+NapCat-Docker 官方模板会持久化 `/app/.config/QQ` 和 `/app/napcat/config`；这两个目录已经在本 compose 中挂载。如果容器重启、重建后 QQ 登录态仍然丢失，优先检查：
 
-如果你确实需要固定 MAC，请在自己的私有 `docker-compose.override.yml` 中添加唯一值：
+```bash
+docker inspect -f '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}' nag-napcat
+ls -la /opt/nag-data/napcat/qq
+ls -la /opt/nag-data/napcat/config
+```
+
+如果目录为空、权限不对，或你不是 root 用户部署，请先修正 `NAPCAT_UID` / `NAPCAT_GID` 和 `/opt/nag-data` 权限。
+
+固定 MAC 可能降低某些单人私有部署里的重复登录摩擦，特别是容器被重新创建时；但不适合作为公开模板默认值，因为所有用户都会从同一个 MAC 开始。
+
+如果你确实需要固定 MAC，请生成一个只属于你自己的值：
+
+```bash
+sh scripts/ensure-napcat-mac.sh
+docker compose up -d
+```
+
+这个脚本需要在 `docker compose up -d` 之前执行，因为 Docker 创建容器网络接口时就要读取 `mac_address`。脚本只会在 `.env` 没有 `NAPCAT_MAC` 时生成一次；后续再次运行会复用已有值，不会覆盖。它还会把 `docker-compose.mac.example.yml` 复制成 `docker-compose.override.yml`。
+
+`docker-compose.mac.example.yml` 会强制要求你在 `.env` 里设置 `NAPCAT_MAC`，避免误用公共示例值。最终等价于在私有 override 里添加：
 
 ```yaml
 services:
   napcat:
-    mac_address: "02:42:ac:11:00:02"
+    mac_address: "${NAPCAT_MAC}"
 ```
 
 多实例部署时，每个实例必须使用不同 MAC。
@@ -456,6 +475,25 @@ curl -I http://127.0.0.1:6099
 ```
 
 服务器上能访问、本地不能访问时，多半是 SSH 隧道断开或端口没转发。
+
+### NapCat 重启后 QQ 需要重新登录
+
+先确认你不是只把配置存在容器内部：
+
+```bash
+docker inspect -f '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}' nag-napcat
+ls -la /opt/nag-data/napcat/qq
+ls -la /opt/nag-data/napcat/config
+```
+
+本 compose 应该至少挂载：
+
+```text
+/opt/nag-data/napcat/qq     -> /app/.config/QQ
+/opt/nag-data/napcat/config -> /app/napcat/config
+```
+
+如果挂载和权限都正常，但容器重建后仍频繁丢登录，可以按上面的 **NapCat MAC** 小节启用唯一固定 MAC。
 
 ### NapCat 日志里出现 ECONNREFUSED astrbot:6199
 

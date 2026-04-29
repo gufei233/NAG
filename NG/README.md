@@ -127,6 +127,35 @@ docker restart ng-napcat
 ws://gscore:8765
 ```
 
+## NapCat 登录态持久化
+
+本 compose 已经持久化 NapCat 的关键目录：
+
+```text
+/opt/ng-data/napcat/qq     -> /app/.config/QQ
+/opt/ng-data/napcat/config -> /app/napcat/config
+/opt/ng-data/napcat/plugins -> /app/napcat/plugins
+```
+
+如果容器重启、重建后 QQ 需要重新扫码，先检查挂载和权限：
+
+```bash
+docker inspect -f '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}' ng-napcat
+ls -la /opt/ng-data/napcat/qq
+ls -la /opt/ng-data/napcat/config
+```
+
+如果挂载和权限都正常，但仍频繁丢登录，可以启用唯一固定 MAC：
+
+```bash
+sh ../scripts/ensure-napcat-mac.sh
+docker compose up -d
+```
+
+这个脚本需要在 `docker compose up -d` 之前执行，因为 Docker 创建容器网络接口时就要读取 `mac_address`。脚本只会在 `.env` 没有 `NAPCAT_MAC` 时生成一次；后续再次运行会复用已有值，不会覆盖。它还会把 `docker-compose.mac.example.yml` 复制成 `docker-compose.override.yml`。
+
+`docker-compose.mac.example.yml` 会强制要求你在 `.env` 里设置 `NAPCAT_MAC`，避免所有部署误用同一个公共 MAC。多实例部署时，每个实例必须使用不同 MAC。
+
 ## 配置 GsCore
 
 打开：

@@ -1,0 +1,4 @@
+services:
+  napcat:
+    mac_address: ${NAPCAT_MAC:?Set a unique NAPCAT_MAC in .env before enabling this override}
+
