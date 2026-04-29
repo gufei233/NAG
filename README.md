@@ -20,15 +20,64 @@ GsCore <-> AstrBot <-> NapCatQQ <-> QQ
 
 推荐使用 Linux 服务器。下文以 Ubuntu / Debian 系为例。
 
+如果你已经是 `root`，命令前不需要 `sudo`。如果系统提示：
+
+```text
+sudo: command not found
+Unable to locate package docker-compose-plugin
+```
+
+这通常说明你正在使用最小化系统，或还没有配置 Docker 官方 apt 源。`docker-compose-plugin` 不一定存在于系统默认 apt 源里。
+
+最省事的安装方式是使用 Docker 官方安装脚本：
+
 ```bash
-sudo apt update
-sudo apt install -y git curl docker.io docker-compose-plugin
-sudo systemctl enable --now docker
+apt update
+apt install -y git curl ca-certificates
+
+curl -fsSL https://get.docker.com -o get-docker.sh
+sh get-docker.sh
+
+systemctl enable --now docker || service docker start
 docker --version
 docker compose version
 ```
 
-如果不是 root 用户部署，并且希望免 `sudo` 使用 Docker：
+如果你不想使用安装脚本，也可以按 Docker 官方文档配置 Docker apt 源后再安装：
+
+```bash
+apt update
+apt install -y git curl ca-certificates
+install -m 0755 -d /etc/apt/keyrings
+
+. /etc/os-release
+case "$ID" in
+  ubuntu) DOCKER_REPO="https://download.docker.com/linux/ubuntu" ;;
+  debian) DOCKER_REPO="https://download.docker.com/linux/debian" ;;
+  *) echo "Unsupported distro: $ID"; exit 1 ;;
+esac
+
+curl -fsSL "$DOCKER_REPO/gpg" -o /etc/apt/keyrings/docker.asc
+chmod a+r /etc/apt/keyrings/docker.asc
+
+cat > /etc/apt/sources.list.d/docker.sources <<EOF
+Types: deb
+URIs: $DOCKER_REPO
+Suites: ${UBUNTU_CODENAME:-$VERSION_CODENAME}
+Components: stable
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+
+apt update
+apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+systemctl enable --now docker || service docker start
+
+docker --version
+docker compose version
+```
+
+如果你不是 root 用户部署，并且希望免 `sudo` 使用 Docker：
 
 ```bash
 sudo usermod -aG docker "$USER"
