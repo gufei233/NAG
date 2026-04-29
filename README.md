@@ -118,19 +118,29 @@ git clone https://github.com/gufei233/NAG.git
 cd NAG
 
 cp .env.example .env
-mkdir -p /opt/nag-data/{astrbot,napcat/config,napcat/qq,gscore/data,gscore/plugins}
-
-docker compose config
-docker compose up -d
-docker compose ps
 ```
 
-如果你不是 root 用户部署，建议把 `DATA_ROOT` 交给当前用户：
+如果你是 root 用户部署：
 
 ```bash
+mkdir -p /opt/nag-data/{astrbot,napcat/config,napcat/qq,gscore/data,gscore/plugins}
+```
+
+如果你不是 root 用户部署，先创建目录并把 `DATA_ROOT` 交给当前用户，再启动 compose：
+
+```bash
+sudo mkdir -p /opt/nag-data/{astrbot,napcat/config,napcat/qq,gscore/data,gscore/plugins}
 sudo chown -R "$(id -u):$(id -g)" /opt/nag-data
 sed -i "s/^NAPCAT_UID=.*/NAPCAT_UID=$(id -u)/" .env
 sed -i "s/^NAPCAT_GID=.*/NAPCAT_GID=$(id -g)/" .env
+```
+
+然后启动：
+
+```bash
+docker compose config
+docker compose up -d
+docker compose ps
 ```
 
 ## 默认端口
