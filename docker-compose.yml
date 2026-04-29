@@ -5,7 +5,7 @@ x-common-env: &common-env
 
 services:
   gscore:
-    image: docker.cnb.cool/gscore-mirror/gsuid_core:latest
+    image: ${GSCORE_IMAGE:-docker.cnb.cool/gscore-mirror/gsuid_core:latest}
     container_name: nag-gscore
     restart: unless-stopped
     environment:
@@ -19,8 +19,8 @@ services:
     ports:
       - "${BIND_IP:-127.0.0.1}:${GSCORE_PORT:-8765}:8765"
     volumes:
-      - ./data/gscore/data:/gsuid_core/data
-      - ./data/gscore/plugins:/gsuid_core/gsuid_core/plugins
+      - ${DATA_ROOT:-/opt/nag-data}/gscore/data:/gsuid_core/data
+      - ${DATA_ROOT:-/opt/nag-data}/gscore/plugins:/gsuid_core/gsuid_core/plugins
       - gscore-venv:/venv
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -35,13 +35,10 @@ services:
       <<: *common-env
     ports:
       - "${BIND_IP:-127.0.0.1}:${ASTRBOT_WEBUI_PORT:-6185}:6185"
-      # 同 Docker 网络下 NapCat 可直接连 ws://astrbot:6199/ws，不必暴露到宿主机。
-      # 若你要从宿主机或外部调试 OneBot 反向 WS，再取消下一行注释。
-      # - "${BIND_IP:-127.0.0.1}:${ASTRBOT_ONEBOT_PORT:-6199}:6199"
     expose:
       - "6199"
     volumes:
-      - ./data/astrbot:/AstrBot/data
+      - ${DATA_ROOT:-/opt/nag-data}/astrbot:/AstrBot/data
     depends_on:
       - gscore
     networks:
@@ -55,74 +52,83 @@ services:
     environment:
       NAPCAT_UID: ${NAPCAT_UID:-1000}
       NAPCAT_GID: ${NAPCAT_GID:-1000}
-      # NapCat-Docker 官方给 AstrBot 场景使用的模式；仍建议首次进入 WebUI 核对网络配置。
       MODE: astrbot
     ports:
       - "${BIND_IP:-127.0.0.1}:${NAPCAT_WEBUI_PORT:-6099}:6099"
-      # 通常不需要暴露 3000/3001；只有你要外部调用 NapCat HTTP/正向 WS 时再开启。
-      # - "${BIND_IP:-127.0.0.1}:3000:3000"
-      # - "${BIND_IP:-127.0.0.1}:3001:3001"
     volumes:
-      # 和 AstrBot 共享 data，方便文件、语音、图片等消息素材互通。
-      - ./data/astrbot:/AstrBot/data
-      - ./data/napcat/config:/app/napcat/config
-      - ./data/napcat/qq:/app/.config/QQ
+      - ${DATA_ROOT:-/opt/nag-data}/astrbot:/AstrBot/data
+      - ${DATA_ROOT:-/opt/nag-data}/napcat/config:/app/napcat/config
+      - ${DATA_ROOT:-/opt/nag-data}/napcat/qq:/app/.config/QQ
     depends_on:
       - astrbot
     networks:
       - nag-net
 
-  # 可选：初始化/更新 AstrBot 的 GsCore 适配器插件。
   astrbot-plugin-init:
     image: alpine/git:latest
     container_name: nag-astrbot-plugin-init
-    profiles: ["init"]
-    entrypoint: ["/bin/sh", "-lc"]
-    command: |
-      set -eu
-      mkdir -p /AstrBot/data/plugins
-      clone_or_update() {
-        repo="$1"
-        dir="$2"
-        if [ -d "/AstrBot/data/plugins/$dir/.git" ]; then
-          git -C "/AstrBot/data/plugins/$dir" pull --ff-only
-        elif [ -e "/AstrBot/data/plugins/$dir" ]; then
-          echo "Skip /AstrBot/data/plugins/$dir: exists but is not a git repo"
-        else
-          git clone --depth=1 "$repo" "/AstrBot/data/plugins/$dir"
-        fi
-      }
-      clone_or_update https://github.com/KimigaiiWuyi/astrbot_plugin_gscore_adapter.git astrbot_plugin_gscore_adapter
+    profiles:
+      - init
+    entrypoint:
+      - /bin/sh
+      - -lc
+    command:
+      - |
+        set -eu
+        mkdir -p /AstrBot/data/plugins
+
+        clone_or_update() {
+          repo="$$1"
+          dir="$$2"
+          target="/AstrBot/data/plugins/$$dir"
+
+          if [ -d "$$target/.git" ]; then
+            git -C "$$target" pull --ff-only
+          elif [ -e "$$target" ]; then
+            echo "Skip $$target: exists but is not a git repo"
+          else
+            git clone --depth=1 "$$repo" "$$target"
+          fi
+        }
+
+        clone_or_update https://github.com/KimigaiiWuyi/astrbot_plugin_gscore_adapter.git astrbot_plugin_gscore_adapter
     volumes:
-      - ./data/astrbot:/AstrBot/data
+      - ${DATA_ROOT:-/opt/nag-data}/astrbot:/AstrBot/data
     networks:
       - nag-net
 
-  # 可选：初始化/更新 GsCore 插件。
   gscore-plugin-init:
     image: alpine/git:latest
     container_name: nag-gscore-plugin-init
-    profiles: ["init"]
-    entrypoint: ["/bin/sh", "-lc"]
-    command: |
-      set -eu
-      mkdir -p /plugins
-      clone_or_update() {
-        repo="$1"
-        dir="$2"
-        if [ -d "/plugins/$dir/.git" ]; then
-          git -C "/plugins/$dir" pull --ff-only
-        elif [ -e "/plugins/$dir" ]; then
-          echo "Skip /plugins/$dir: exists but is not a git repo"
-        else
-          git clone --depth=1 "$repo" "/plugins/$dir"
-        fi
-      }
-      clone_or_update https://github.com/Loping151/XutheringWavesUID.git XutheringWavesUID
-      clone_or_update https://github.com/Loping151/RoverSign.git RoverSign
-      clone_or_update https://github.com/Loping151/ScoreEcho.git ScoreEcho
+    profiles:
+      - init
+    entrypoint:
+      - /bin/sh
+      - -lc
+    command:
+      - |
+        set -eu
+        mkdir -p /plugins
+
+        clone_or_update() {
+          repo="$$1"
+          dir="$$2"
+          target="/plugins/$$dir"
+
+          if [ -d "$$target/.git" ]; then
+            git -C "$$target" pull --ff-only
+          elif [ -e "$$target" ]; then
+            echo "Skip $$target: exists but is not a git repo"
+          else
+            git clone --depth=1 "$$repo" "$$target"
+          fi
+        }
+
+        clone_or_update https://github.com/Loping151/XutheringWavesUID.git XutheringWavesUID
+        clone_or_update https://github.com/Loping151/RoverSign.git RoverSign
+        clone_or_update https://github.com/Loping151/ScoreEcho.git ScoreEcho
     volumes:
-      - ./data/gscore/plugins:/plugins
+      - ${DATA_ROOT:-/opt/nag-data}/gscore/plugins:/plugins
     networks:
       - nag-net
 
