@@ -209,6 +209,45 @@ ROVERSIGN_REPO=https://cnb.cool/gscore-mirror/RoverSign
 SCOREECHO_REPO=https://cnb.cool/gscore-mirror/ScoreEcho
 ```
 
+### XutheringWavesUID 额外依赖
+
+XutheringWavesUID 的部分功能需要额外依赖。由于插件仓库没有把这些写进 `pyproject.toml` / `requirements.txt` 的依赖清单里，GsCore 安装插件时不会自动安装。
+
+建议额外安装：
+
+```text
+playwright：HTML 渲染调用
+Playwright Chromium：HTML 渲染所需浏览器二进制
+opencv-python：面板图重复判断、提取面板图、相似度识别等
+fonttools：多语言字体 fallback
+pypinyin：部分中文拼音/别名处理能力
+```
+
+缺少 Playwright 浏览器时，会看到类似错误：
+
+```text
+BrowserType.launch: Executable doesn't exist at /ms-playwright/...
+Looks like Playwright was just installed or updated.
+Please run the following command to download new browsers:
+    playwright install
+```
+
+本 compose 已经把 `/ms-playwright` 挂到 `gscore-playwright` volume。首次使用 XutheringWavesUID 渲染功能前，建议执行一次：
+
+```bash
+docker compose --profile init run --rm gscore-xwuid-deps-init
+docker restart ng-gscore
+```
+
+这会运行：
+
+```bash
+uv pip install playwright opencv-python fonttools pypinyin
+uv run playwright install chromium
+```
+
+Python 包会安装到 `gscore-venv` volume，浏览器文件会保存在 `gscore-playwright` volume 中。执行 `docker compose down -v` 会删除这些 volume，之后需要重新运行上面的初始化命令。
+
 插件安装后，建议在联通后执行：
 
 ```text

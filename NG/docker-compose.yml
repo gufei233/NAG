@@ -13,6 +13,7 @@ services:
       PYTHONUNBUFFERED: "1"
       UV_INDEX: ${GSCORE_PYTHON_INDEX:-https://pypi.org/simple/}
       UV_NO_CONFIG: ${UV_NO_CONFIG:-0}
+      PLAYWRIGHT_BROWSERS_PATH: ${PLAYWRIGHT_BROWSERS_PATH:-/ms-playwright}
       http_proxy: ${GSCORE_HTTP_PROXY:-}
       https_proxy: ${GSCORE_HTTPS_PROXY:-}
       no_proxy: ${GSCORE_NO_PROXY:-localhost,127.0.0.1,gscore,napcat,.local,cnb.cool,mirrors.aliyun.com,pypi.tuna.tsinghua.edu.cn,mirrors.volces.com}
@@ -22,6 +23,7 @@ services:
       - ${DATA_ROOT:-/opt/ng-data}/gscore/data:/gsuid_core/data
       - ${DATA_ROOT:-/opt/ng-data}/gscore/plugins:/gsuid_core/gsuid_core/plugins
       - gscore-venv:/venv
+      - gscore-playwright:/ms-playwright
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -73,6 +75,39 @@ services:
     networks:
       - ng-net
 
+  gscore-xwuid-deps-init:
+    image: ${GSCORE_IMAGE:-docker.cnb.cool/gscore-mirror/gsuid_core:latest}
+    container_name: ng-gscore-xwuid-deps-init
+    profiles:
+      - init
+    environment:
+      <<: *common-env
+      GSCORE_XWUID_PYTHON_PACKAGES: ${GSCORE_XWUID_PYTHON_PACKAGES:-playwright opencv-python fonttools pypinyin}
+      UV_INDEX: ${GSCORE_PYTHON_INDEX:-https://pypi.org/simple/}
+      UV_NO_CONFIG: ${UV_NO_CONFIG:-0}
+      PLAYWRIGHT_BROWSERS_PATH: ${PLAYWRIGHT_BROWSERS_PATH:-/ms-playwright}
+      http_proxy: ${GSCORE_HTTP_PROXY:-}
+      https_proxy: ${GSCORE_HTTPS_PROXY:-}
+      no_proxy: ${GSCORE_NO_PROXY:-localhost,127.0.0.1,gscore,napcat,.local,cnb.cool,mirrors.aliyun.com,pypi.tuna.tsinghua.edu.cn,mirrors.volces.com}
+    working_dir: /gsuid_core
+    entrypoint:
+      - /bin/sh
+      - -lc
+    command:
+      - |
+        set -eu
+        uv pip install $$GSCORE_XWUID_PYTHON_PACKAGES
+        uv run playwright install chromium
+    volumes:
+      - ${DATA_ROOT:-/opt/ng-data}/gscore/data:/gsuid_core/data
+      - ${DATA_ROOT:-/opt/ng-data}/gscore/plugins:/gsuid_core/gsuid_core/plugins
+      - gscore-venv:/venv
+      - gscore-playwright:/ms-playwright
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - ng-net
+
   gscore-plugin-init:
     image: alpine/git:latest
     container_name: ng-gscore-plugin-init
@@ -114,4 +149,4 @@ networks:
 
 volumes:
   gscore-venv:
-
+  gscore-playwright:
