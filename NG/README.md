@@ -69,6 +69,40 @@ ssh -N \
   root@你的服务器IP
 ```
 
+保持这个窗口不要关闭，然后在本地浏览器打开上面的两个地址。
+
+如果你确实要公网直接访问 WebUI，可以把 `.env` 里的 `BIND_IP=127.0.0.1` 改成：
+
+```env
+BIND_IP=0.0.0.0
+```
+
+同时请务必在安全组/防火墙中只放行必要来源，并第一时间修改 GsCore 和 NapCat WebUI 的密码、Token。
+
+## 登录 NapCat
+
+打开：
+
+```text
+http://127.0.0.1:6099
+```
+
+如果不知道 WebUI token，可以查看日志：
+
+```bash
+docker logs --tail=200 ng-napcat
+```
+
+日志里通常会出现类似：
+
+```text
+http://127.0.0.1:6099/webui?token=xxxxx
+```
+
+登录 NapCat WebUI 后，先修改默认密码 / token，再扫码登录 QQ。
+
+NG 版不使用 AstrBot，也不需要配置 `ws://astrbot:6199/ws` 这类 OneBot 反向 WebSocket。这里真正需要启用的是 NapCat 的插件能力：安装并启用 `napcat-plugin-gscore-adapter`，再让插件直接连接 GsCore。
+
 ## 安装 NapCat GsCore 适配器
 
 `napcat-plugin-gscore-adapter` 官方 README 建议把插件放到 NapCat 的 `plugins` 目录，并在 NapCat WebUI 插件管理中启用。本 compose 已经持久化：
