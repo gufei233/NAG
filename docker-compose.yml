@@ -48,7 +48,6 @@ services:
     image: ${NAPCAT_IMAGE:-mlikiowa/napcat-docker:latest}
     container_name: nag-napcat
     restart: unless-stopped
-    mac_address: ${NAPCAT_MAC:-02:42:ac:11:00:02}
     environment:
       NAPCAT_UID: ${NAPCAT_UID:-1000}
       NAPCAT_GID: ${NAPCAT_GID:-1000}
@@ -91,7 +90,7 @@ services:
           fi
         }
 
-        clone_or_update https://github.com/KimigaiiWuyi/astrbot_plugin_gscore_adapter.git astrbot_plugin_gscore_adapter
+        clone_or_update ${ASTRBOT_GSCORE_ADAPTER_REPO:-https://github.com/KimigaiiWuyi/astrbot_plugin_gscore_adapter.git} astrbot_plugin_gscore_adapter
     volumes:
       - ${DATA_ROOT:-/opt/nag-data}/astrbot:/AstrBot/data
     networks:
@@ -124,9 +123,9 @@ services:
           fi
         }
 
-        clone_or_update https://github.com/Loping151/XutheringWavesUID.git XutheringWavesUID
-        clone_or_update https://github.com/Loping151/RoverSign.git RoverSign
-        clone_or_update https://github.com/Loping151/ScoreEcho.git ScoreEcho
+        clone_or_update ${XUTHERINGWAVESUID_REPO:-https://github.com/Loping151/XutheringWavesUID.git} XutheringWavesUID
+        clone_or_update ${ROVERSIGN_REPO:-https://github.com/Loping151/RoverSign.git} RoverSign
+        clone_or_update ${SCOREECHO_REPO:-https://github.com/Loping151/ScoreEcho.git} ScoreEcho
     volumes:
       - ${DATA_ROOT:-/opt/nag-data}/gscore/plugins:/plugins
     networks:
