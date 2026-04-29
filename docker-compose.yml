@@ -119,8 +119,12 @@ services:
     command:
       - |
         set -eu
-        uv pip install $$GSCORE_XWUID_PYTHON_PACKAGES
-        uv run playwright install chromium
+        if [ ! -x /venv/bin/python ]; then
+          echo "Missing /venv/bin/python. Start gscore once first: docker compose up -d gscore"
+          exit 1
+        fi
+        uv pip install --python /venv/bin/python $$GSCORE_XWUID_PYTHON_PACKAGES
+        uv run --python /venv/bin/python playwright install chromium
     volumes:
       - ${DATA_ROOT:-/opt/nag-data}/gscore/data:/gsuid_core/data
       - ${DATA_ROOT:-/opt/nag-data}/gscore/plugins:/gsuid_core/gsuid_core/plugins

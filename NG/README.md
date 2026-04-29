@@ -235,6 +235,7 @@ Please run the following command to download new browsers:
 本 compose 已经把 `/ms-playwright` 挂到 `gscore-playwright` volume。首次使用 XutheringWavesUID 渲染功能前，建议执行一次：
 
 ```bash
+docker compose up -d gscore
 docker compose --profile init run --rm gscore-xwuid-deps-init
 docker restart ng-gscore
 ```
@@ -242,8 +243,8 @@ docker restart ng-gscore
 这会运行：
 
 ```bash
-uv pip install playwright opencv-python fonttools pypinyin
-uv run playwright install chromium
+uv pip install --python /venv/bin/python playwright opencv-python fonttools pypinyin
+uv run --python /venv/bin/python playwright install chromium
 ```
 
 Python 包会安装到 `gscore-venv` volume，浏览器文件会保存在 `gscore-playwright` volume 中。执行 `docker compose down -v` 会删除这些 volume，之后需要重新运行上面的初始化命令。
