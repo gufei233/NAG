@@ -313,7 +313,7 @@ WS_TOKEN：生成一个随机强 token
 openssl rand -hex 24
 ```
 
-`WS_TOKEN` 设置后，AstrBot 的 GsCore 适配器里必须填写同一个 token。Docker 同机跨容器时，不建议只依赖 `TRUSTED_IPS`。
+`WS_TOKEN` 设置后，AstrBot 的 GsCore 适配器里必须填写同一个 token。Docker 同机跨容器时，不建议只依赖 `TRUSTED_IPS`。通过 `install.sh` 安装时会自动生成并持久化共享 token，无需手动执行上述命令。
 
 GsCore 配置文件主要位于：
 
@@ -355,6 +355,8 @@ http://127.0.0.1:6185
 ```
 
 注意：这里不要填 `localhost`。在 Docker 容器中，`localhost` 指 AstrBot 容器自己，不是 GsCore 容器；同一 compose 网络内应使用服务名 `gscore`。
+
+通过 `install.sh` 选择 AstrBot 适配器模式时，安装器会在首次安装时自动创建该插件配置，写入 `gscore:8765` 和与 GsCore 相同的共享 `WS_TOKEN`；token 也会保存在权限为 `600` 的管理环境文件中。已有 AstrBot 插件配置不会被覆盖。
 
 ### 3. 登录 NapCat
 

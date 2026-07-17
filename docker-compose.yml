@@ -70,6 +70,8 @@ services:
     container_name: nag-astrbot-plugin-init
     profiles:
       - init
+    environment:
+      GSCORE_WS_TOKEN: ${GSCORE_WS_TOKEN:-}
     entrypoint:
       - /bin/sh
       - -lc
@@ -93,6 +95,22 @@ services:
         }
 
         clone_or_update ${ASTRBOT_GSCORE_ADAPTER_REPO:-https://github.com/KimigaiiWuyi/astrbot_plugin_gscore_adapter.git} astrbot_plugin_gscore_adapter
+
+        config=/AstrBot/data/config/astrbot_plugin_gscore_adapter_config.json
+        if [ ! -e "$$config" ]; then
+          mkdir -p /AstrBot/data/config
+          cat >"$$config" <<EOF
+        {
+          "IP": "gscore",
+          "PORT": "8765",
+          "BOT_ID": "AstrBot",
+          "WS_TOKEN": "$$GSCORE_WS_TOKEN",
+          "GSCORE_ONLY_PREFIXES": [],
+          "MAX_RETRY_TIMES": 30
+        }
+        EOF
+          echo "Created AstrBot GScore adapter config for gscore:8765."
+        fi
     volumes:
       - ${DATA_ROOT:-/opt/nag-data}/astrbot:/AstrBot/data
     networks:

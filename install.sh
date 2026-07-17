@@ -279,10 +279,19 @@ if [[ "$ADAPTER_KIND" == "napcat" ]] && (( ! ASSUME_YES )); then
   NAPCAT_ADAPTER_URL="$(prompt_value "NapCat GScore 适配器 ZIP 地址" "$NAPCAT_ADAPTER_URL")"
 fi
 
+GSCORE_WS_TOKEN="$(env_default GSCORE_WS_TOKEN "")"
+if [[ -z "$GSCORE_WS_TOKEN" ]]; then
+  command -v od >/dev/null 2>&1 || die "od is required to generate GSCORE_WS_TOKEN"
+  GSCORE_WS_TOKEN="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
+fi
+[[ "$GSCORE_WS_TOKEN" =~ ^[A-Za-z0-9._~-]+$ ]] || \
+  die "GSCORE_WS_TOKEN may only contain letters, numbers, dot, underscore, tilde, and hyphen"
+
 for pair in \
   "DATA_ROOT=$DATA_ROOT" "BIND_IP=$BIND_IP" \
   "GSCORE_PORT=$GSCORE_PORT" "ASTRBOT_WEBUI_PORT=$ASTRBOT_WEBUI_PORT" \
-  "NAPCAT_WEBUI_PORT=$NAPCAT_WEBUI_PORT" "NAPCAT_ADAPTER_URL=$NAPCAT_ADAPTER_URL"; do
+  "NAPCAT_WEBUI_PORT=$NAPCAT_WEBUI_PORT" "NAPCAT_ADAPTER_URL=$NAPCAT_ADAPTER_URL" \
+  "GSCORE_WS_TOKEN=$GSCORE_WS_TOKEN"; do
   validate_single_line "${pair%%=*}" "${pair#*=}"
 done
 
@@ -355,6 +364,7 @@ XUTHERINGWAVESUID_REPO=$XUTHERINGWAVESUID_REPO
 ROVERSIGN_REPO=$ROVERSIGN_REPO
 SCOREECHO_REPO=$SCOREECHO_REPO
 GSCORE_PYTHON_INDEX=https://pypi.org/simple/
+GSCORE_WS_TOKEN=$GSCORE_WS_TOKEN
 UV_NO_CONFIG=0
 PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 GSCORE_XWUID_PYTHON_PACKAGES=playwright opencv-python fonttools pypinyin
@@ -424,7 +434,8 @@ compose up -d gscore
 log "waiting for the persistent GsCore Python environment"
 venv_ready=0
 for ((attempt = 1; attempt <= 60; attempt++)); do
-  if compose exec -T gscore test -x /venv/bin/python >/dev/null 2>&1; then
+  if compose exec -T gscore sh -c \
+    'test -x /venv/bin/python && test -f /gsuid_core/data/config.json' >/dev/null 2>&1; then
     venv_ready=1
     break
   fi
@@ -432,8 +443,24 @@ for ((attempt = 1; attempt <= 60; attempt++)); do
 done
 if (( ! venv_ready )); then
   compose logs --tail=100 gscore || true
-  die "GsCore did not create /venv/bin/python within 120 seconds"
+  die "GsCore did not create /venv/bin/python and data/config.json within 120 seconds"
 fi
+
+log "configuring the GsCore WebSocket token"
+compose exec -T gscore /venv/bin/python - "$GSCORE_WS_TOKEN" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+config_path = Path("/gsuid_core/data/config.json")
+config = json.loads(config_path.read_text(encoding="utf-8-sig"))
+config["WS_TOKEN"] = sys.argv[1]
+config_path.write_text(
+    json.dumps(config, ensure_ascii=False, indent=2) + "\n",
+    encoding="utf-8",
+)
+PY
+compose restart gscore
 
 if ((INSTALL_WUWA)); then
   log "cloning or updating the Wuthering Waves plugin suite"
@@ -476,12 +503,12 @@ cat <<EOF
 
 接下来仍需手动完成：
   1. 在 NapCat WebUI 修改密码并扫码登录 QQ。
-  2. 在 GsCore WebUI 注册、设置管理员和 WS_TOKEN。
+  2. 在 GsCore WebUI 注册并设置管理员；WS_TOKEN 已自动生成并保存在管理环境文件中。
 EOF
 if [[ "$ADAPTER_KIND" == "astrbot" ]]; then
   cat <<'EOF'
-  3. 在 AstrBot 启用 aiocqhttp/OneBot 平台和 GScore 适配器。
-  4. AstrBot GScore 适配器的 IP 填写 gscore、PORT 填写 8765，并同步 WS_TOKEN。
+  3. 在 AstrBot 启用 aiocqhttp/OneBot 平台；GScore 适配器已预配置为 gscore:8765 和共享 WS_TOKEN。
+  4. 如手动修改 WS_TOKEN，请保持 GsCore 与 AstrBot GScore 适配器中的值一致。
 EOF
 elif [[ "$MODE" == "hybrid" ]]; then
   cat <<'EOF'
