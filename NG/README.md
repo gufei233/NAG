@@ -2,7 +2,7 @@
 
 NapCat + GsCore 的轻量 Docker Compose 部署模板。
 
-也可以在仓库根目录运行 `bash install.sh`，然后选择第 3 种部署方式。交互式安装器会询问主人 QQ，完成容器、插件和额外依赖初始化，自动启用 NapCat GScore 适配器并配置 `ws://gscore:8765`、共享 `WS_TOKEN` 和主人 QQ；结束时还会直接显示 GsCore 的首次注册 `REGISTER_CODE`。
+也可以在仓库根目录运行 `bash install.sh`，然后选择第 3 种部署方式。交互式安装器会询问主人 QQ，将同一列表写入 GsCore 的 `masters` 和 NapCat 适配器，完成容器、插件和额外依赖初始化，自动配置 `ws://gscore:8765` 与共享 `WS_TOKEN`；结束时还会直接显示 GsCore 的首次注册 `REGISTER_CODE`。
 
 本目录面向不需要 AstrBot / LLM / 多平台管理，只想让 NapCat 直接把 QQ 消息转发给 GsCore 的用户：
 

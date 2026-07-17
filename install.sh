@@ -45,8 +45,8 @@ Options:
                   napcat          NapCat + GsCore, NapCat adapter
   --yes         Accept the recommended answers for optional questions
   --master-qq QQ
-                Master QQ for the NapCat GScore adapter. Separate multiple
-                accounts with commas.
+                Master QQ for GsCore and the NapCat GScore adapter. Separate
+                multiple accounts with commas.
   --dry-run     Print the selected plan without changing the host
   -h, --help    Show this help
 
@@ -227,20 +227,18 @@ NAPCAT_MASTER_QQ="$(env_default NAPCAT_MASTER_QQ "")"
 if [[ -n "$NAPCAT_MASTER_QQ_OVERRIDE" ]]; then
   NAPCAT_MASTER_QQ="$NAPCAT_MASTER_QQ_OVERRIDE"
 fi
-if [[ "$ADAPTER_KIND" == "napcat" ]]; then
-  if ((ASSUME_YES)); then
-    [[ -n "$NAPCAT_MASTER_QQ" ]] || \
-      die "NapCat adapter mode requires --master-qq on the first unattended installation"
-  else
-    while [[ -z "$NAPCAT_MASTER_QQ" ]]; do
-      NAPCAT_MASTER_QQ="$(prompt_value "主人 QQ（多个 QQ 使用英文逗号分隔）" "$NAPCAT_MASTER_QQ")"
-      [[ -n "$NAPCAT_MASTER_QQ" ]] || warn "主人 QQ 不能为空"
-    done
-  fi
-  NAPCAT_MASTER_QQ="${NAPCAT_MASTER_QQ//[[:space:]]/}"
-  [[ "$NAPCAT_MASTER_QQ" =~ ^[1-9][0-9]{4,11}(,[1-9][0-9]{4,11})*$ ]] || \
-    die "主人 QQ 格式无效；请输入 5-12 位 QQ 号，多个号码使用英文逗号分隔"
+if ((ASSUME_YES)); then
+  [[ -n "$NAPCAT_MASTER_QQ" ]] || \
+    die "--master-qq is required on the first unattended installation"
+else
+  while [[ -z "$NAPCAT_MASTER_QQ" ]]; do
+    NAPCAT_MASTER_QQ="$(prompt_value "主人 QQ（多个 QQ 使用英文逗号分隔）" "$NAPCAT_MASTER_QQ")"
+    [[ -n "$NAPCAT_MASTER_QQ" ]] || warn "主人 QQ 不能为空"
+  done
 fi
+NAPCAT_MASTER_QQ="${NAPCAT_MASTER_QQ//[[:space:]]/}"
+[[ "$NAPCAT_MASTER_QQ" =~ ^[1-9][0-9]{4,11}(,[1-9][0-9]{4,11})*$ ]] || \
+  die "主人 QQ 格式无效；请输入 5-12 位 QQ 号，多个号码使用英文逗号分隔"
 
 DATA_ROOT="$(prompt_value "持久化数据目录" "$(env_default DATA_ROOT "$DEFAULT_DATA_ROOT")")"
 BIND_IP="$(prompt_value "WebUI 绑定地址" "$(env_default BIND_IP "127.0.0.1")")"
@@ -342,8 +340,8 @@ EOF
     printf 'AstrBot 端口：%s\n' "$ASTRBOT_WEBUI_PORT"
   fi
   printf 'NapCat 镜像：%s\n' "$NAPCAT_IMAGE"
+  printf 'GsCore 主人列表：%s（自动配置）\n' "$NAPCAT_MASTER_QQ"
   if [[ "$ADAPTER_KIND" == "napcat" ]]; then
-    printf '主人 QQ：%s\n' "$NAPCAT_MASTER_QQ"
     printf 'GScore 适配器：自动启用并连接 ws://gscore:8765\n'
   fi
   printf '固定 MAC：%s\n' "${NAPCAT_MAC:-不启用}"
@@ -529,8 +527,8 @@ fi
 
 wait_gscore_ready "before configuring the WebSocket token"
 
-log "configuring the GsCore WebSocket token"
-compose exec -T gscore /venv/bin/python - "$GSCORE_WS_TOKEN" <<'PY'
+log "configuring the GsCore WebSocket token and master accounts"
+compose exec -T gscore /venv/bin/python - "$GSCORE_WS_TOKEN" "$NAPCAT_MASTER_QQ" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -538,6 +536,8 @@ from pathlib import Path
 config_path = Path("/gsuid_core/data/config.json")
 config = json.loads(config_path.read_text(encoding="utf-8-sig"))
 config["WS_TOKEN"] = sys.argv[1]
+if sys.argv[2]:
+    config["masters"] = list(dict.fromkeys(sys.argv[2].split(",")))
 config_path.write_text(
     json.dumps(config, ensure_ascii=False, indent=2) + "\n",
     encoding="utf-8",
@@ -608,7 +608,7 @@ cat <<EOF
 
 接下来仍需手动完成：
   1. 在 NapCat WebUI 修改密码并扫码登录 QQ。
-  2. 使用上方注册码在 GsCore WebUI 完成首次注册并设置管理员；WS_TOKEN 已自动生成并保存在管理环境文件中。
+  2. 使用上方注册码在 GsCore WebUI 完成首次注册；主人账号列表和 WS_TOKEN 已自动配置。
 EOF
 if [[ "$ADAPTER_KIND" == "astrbot" ]]; then
   cat <<'EOF'

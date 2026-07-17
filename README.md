@@ -16,17 +16,17 @@ bash install.sh
 2. NapCat + AstrBot + GsCore，使用 NapCat GScore 适配器；
 3. NapCat + GsCore，使用 NapCat GScore 适配器（NG 轻量版）。
 
-后两种方式会强制使用 `mlikiowa/napcat-docker:v4.18.5`。安装器还会询问主人 QQ，自动启用并配置 NapCat GScore 适配器（连接地址、共享 `WS_TOKEN`、主人 QQ），并可创建持久化目录、固定 NapCat MAC、克隆鸣潮插件套件及安装 Playwright、OpenCV、字体、拼音和 Chromium 等额外依赖。安装完成时会直接显示 GsCore 首次注册所需的 `REGISTER_CODE`。
+后两种方式会强制使用 `mlikiowa/napcat-docker:v4.18.5`。三种方式都会询问主人 QQ 并写入 GsCore 的 `masters`；使用 NapCat GScore 适配器时，还会把同一主人列表同步给适配器，自动配置连接地址与共享 `WS_TOKEN`。安装器还可创建持久化目录、固定 NapCat MAC、克隆鸣潮插件套件及安装 Playwright、OpenCV、字体、拼音和 Chromium 等额外依赖。安装完成时会直接显示 GsCore 首次注册所需的 `REGISTER_CODE`。
 
 无人值守地采用推荐值，或仅查看执行计划：
 
 ```bash
-bash install.sh --mode astrbot --yes
+bash install.sh --mode astrbot --yes --master-qq 123456789
 bash install.sh --mode hybrid --yes --master-qq 123456789 --dry-run
 bash install.sh --mode napcat --yes --master-qq 123456789 --dry-run
 ```
 
-安装器不会代替用户登录 QQ 或在 GsCore WebUI 注册管理员。它会自动生成适配器共享的 `WS_TOKEN`，并把私有 Compose 环境保存在被 Git 忽略且权限为 `600` 的 `.installer/` 目录。
+安装器不会代替用户登录 QQ 或在 GsCore WebUI 完成首次注册。它会自动配置 GsCore 主人列表、生成适配器共享的 `WS_TOKEN`，并把私有 Compose 环境保存在被 Git 忽略且权限为 `600` 的 `.installer/` 目录。
 
 同一组默认端口和容器名一次只应运行一种部署方式。从 AstrBot 适配器模式切换到 NapCat 适配器混合模式时，还需要在 AstrBot 中停用已有的 GScore 适配器，避免同一条指令被重复处理。
 
