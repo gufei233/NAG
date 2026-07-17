@@ -17,6 +17,7 @@ INSTALL_WUWA=1
 INSTALL_WUWA_DEPS=1
 FIXED_MAC=1
 USE_CNB_MIRRORS=0
+NAPCAT_MASTER_QQ_OVERRIDE=""
 
 log() {
   printf '[NAG] %s\n' "$*"
@@ -43,11 +44,14 @@ Options:
                   hybrid          NapCat + AstrBot + GsCore, NapCat adapter
                   napcat          NapCat + GsCore, NapCat adapter
   --yes         Accept the recommended answers for optional questions
+  --master-qq QQ
+                Master QQ for the NapCat GScore adapter. Separate multiple
+                accounts with commas.
   --dry-run     Print the selected plan without changing the host
   -h, --help    Show this help
 
 The installer stores its private Compose environment under .installer/.
-Application login, tokens, and business settings remain manual WebUI steps.
+QQ login and GsCore administrator registration remain manual WebUI steps.
 EOF
 }
 
@@ -61,6 +65,11 @@ while (($# > 0)); do
     --yes)
       ASSUME_YES=1
       shift
+      ;;
+    --master-qq)
+      (($# >= 2)) || die "--master-qq requires a value"
+      NAPCAT_MASTER_QQ_OVERRIDE="$2"
+      shift 2
       ;;
     --dry-run)
       DRY_RUN=1
@@ -214,6 +223,25 @@ case "$MODE" in
     ;;
 esac
 
+NAPCAT_MASTER_QQ="$(env_default NAPCAT_MASTER_QQ "")"
+if [[ -n "$NAPCAT_MASTER_QQ_OVERRIDE" ]]; then
+  NAPCAT_MASTER_QQ="$NAPCAT_MASTER_QQ_OVERRIDE"
+fi
+if [[ "$ADAPTER_KIND" == "napcat" ]]; then
+  if ((ASSUME_YES)); then
+    [[ -n "$NAPCAT_MASTER_QQ" ]] || \
+      die "NapCat adapter mode requires --master-qq on the first unattended installation"
+  else
+    while [[ -z "$NAPCAT_MASTER_QQ" ]]; do
+      NAPCAT_MASTER_QQ="$(prompt_value "主人 QQ（多个 QQ 使用英文逗号分隔）" "$NAPCAT_MASTER_QQ")"
+      [[ -n "$NAPCAT_MASTER_QQ" ]] || warn "主人 QQ 不能为空"
+    done
+  fi
+  NAPCAT_MASTER_QQ="${NAPCAT_MASTER_QQ//[[:space:]]/}"
+  [[ "$NAPCAT_MASTER_QQ" =~ ^[1-9][0-9]{4,11}(,[1-9][0-9]{4,11})*$ ]] || \
+    die "主人 QQ 格式无效；请输入 5-12 位 QQ 号，多个号码使用英文逗号分隔"
+fi
+
 DATA_ROOT="$(prompt_value "持久化数据目录" "$(env_default DATA_ROOT "$DEFAULT_DATA_ROOT")")"
 BIND_IP="$(prompt_value "WebUI 绑定地址" "$(env_default BIND_IP "127.0.0.1")")"
 GSCORE_PORT="$(prompt_value "GsCore WebUI 端口" "$(env_default GSCORE_PORT "8765")")"
@@ -291,7 +319,7 @@ for pair in \
   "DATA_ROOT=$DATA_ROOT" "BIND_IP=$BIND_IP" \
   "GSCORE_PORT=$GSCORE_PORT" "ASTRBOT_WEBUI_PORT=$ASTRBOT_WEBUI_PORT" \
   "NAPCAT_WEBUI_PORT=$NAPCAT_WEBUI_PORT" "NAPCAT_ADAPTER_URL=$NAPCAT_ADAPTER_URL" \
-  "GSCORE_WS_TOKEN=$GSCORE_WS_TOKEN"; do
+  "GSCORE_WS_TOKEN=$GSCORE_WS_TOKEN" "NAPCAT_MASTER_QQ=$NAPCAT_MASTER_QQ"; do
   validate_single_line "${pair%%=*}" "${pair#*=}"
 done
 
@@ -314,6 +342,10 @@ EOF
     printf 'AstrBot 端口：%s\n' "$ASTRBOT_WEBUI_PORT"
   fi
   printf 'NapCat 镜像：%s\n' "$NAPCAT_IMAGE"
+  if [[ "$ADAPTER_KIND" == "napcat" ]]; then
+    printf '主人 QQ：%s\n' "$NAPCAT_MASTER_QQ"
+    printf 'GScore 适配器：自动启用并连接 ws://gscore:8765\n'
+  fi
   printf '固定 MAC：%s\n' "${NAPCAT_MAC:-不启用}"
   printf '鸣潮插件：%s\n' "$([[ $INSTALL_WUWA -eq 1 ]] && printf 安装 || printf 跳过)"
   printf '额外依赖：%s\n\n' "$([[ $INSTALL_WUWA_DEPS -eq 1 ]] && printf 安装 || printf 跳过)"
@@ -355,6 +387,7 @@ NAPCAT_WEBUI_PORT=$NAPCAT_WEBUI_PORT
 NAPCAT_UID=$NAPCAT_UID
 NAPCAT_GID=$NAPCAT_GID
 NAPCAT_MAC=$NAPCAT_MAC
+NAPCAT_MASTER_QQ=$NAPCAT_MASTER_QQ
 GSCORE_IMAGE=docker.cnb.cool/gscore-mirror/gsuid_core:latest
 ASTRBOT_IMAGE=soulter/astrbot:latest
 NAPCAT_IMAGE=$NAPCAT_IMAGE
@@ -451,6 +484,16 @@ wait_napcat_webui_token() {
   return 1
 }
 
+read_gscore_register_code() {
+  compose exec -T gscore /venv/bin/python -c '
+import json
+from pathlib import Path
+
+config = json.loads(Path("/gsuid_core/data/config.json").read_text(encoding="utf-8-sig"))
+print(config.get("REGISTER_CODE", ""), end="")
+'
+}
+
 compose config --quiet
 
 if [[ "$ADAPTER_KIND" == "napcat" ]]; then
@@ -530,6 +573,12 @@ log "starting selected services"
 compose up -d
 wait_gscore_ready "after installing plugins and dependencies"
 
+GSCORE_REGISTER_CODE=""
+if ! GSCORE_REGISTER_CODE="$(read_gscore_register_code)" || [[ -z "$GSCORE_REGISTER_CODE" ]]; then
+  warn "GsCore started, but REGISTER_CODE could not be read from data/config.json"
+  GSCORE_REGISTER_CODE=""
+fi
+
 NAPCAT_WEBUI_TOKEN=""
 log "waiting for the NapCat WebUI token"
 if ! NAPCAT_WEBUI_TOKEN="$(wait_napcat_webui_token)"; then
@@ -543,6 +592,7 @@ cat <<EOF
 
 WebUI：
   GsCore: http://${BIND_IP}:${GSCORE_PORT}/app/
+  GsCore 注册码: ${GSCORE_REGISTER_CODE:-未读取到，请查看 $DATA_ROOT/gscore/data/config.json 中的 REGISTER_CODE}
   NapCat: http://${BIND_IP}:${NAPCAT_WEBUI_PORT}
 EOF
 if [[ -n "$NAPCAT_WEBUI_TOKEN" ]]; then
@@ -558,7 +608,7 @@ cat <<EOF
 
 接下来仍需手动完成：
   1. 在 NapCat WebUI 修改密码并扫码登录 QQ。
-  2. 在 GsCore WebUI 注册并设置管理员；WS_TOKEN 已自动生成并保存在管理环境文件中。
+  2. 使用上方注册码在 GsCore WebUI 完成首次注册并设置管理员；WS_TOKEN 已自动生成并保存在管理环境文件中。
 EOF
 if [[ "$ADAPTER_KIND" == "astrbot" ]]; then
   cat <<'EOF'
@@ -567,12 +617,12 @@ if [[ "$ADAPTER_KIND" == "astrbot" ]]; then
 EOF
 elif [[ "$MODE" == "hybrid" ]]; then
   cat <<'EOF'
-  3. 在 NapCat 启用 GScore 适配器，地址填写 ws://gscore:8765。
+  3. NapCat GScore 适配器已自动启用，并已配置连接地址、WS_TOKEN 和主人 QQ。
   4. 在 AstrBot 配置 OneBot 平台，并让 LLM 忽略 GScore 指令前缀，避免重复回复。
 EOF
 else
   cat <<'EOF'
-  3. 在 NapCat 启用 GScore 适配器，地址填写 ws://gscore:8765，并同步 WS_TOKEN。
+  3. NapCat GScore 适配器已自动启用，并已配置连接地址、WS_TOKEN 和主人 QQ。
 EOF
 fi
 

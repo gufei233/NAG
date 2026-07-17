@@ -13,19 +13,45 @@ services:
       - init
     environment:
       NAPCAT_GSCORE_ADAPTER_ZIP_URL: ${NAPCAT_GSCORE_ADAPTER_ZIP_URL:-https://github.com/xiowo/napcat-plugin-gscore-adapter/releases/latest/download/napcat-plugin-gscore-adapter.zip}
+      GSCORE_WS_TOKEN: ${GSCORE_WS_TOKEN:-}
+      NAPCAT_MASTER_QQ: ${NAPCAT_MASTER_QQ:-}
+      NAPCAT_UID: ${NAPCAT_UID:-1000}
+      NAPCAT_GID: ${NAPCAT_GID:-1000}
     entrypoint:
       - /bin/sh
       - -lc
     command:
       - |
         set -eu
-        apk add --no-cache curl unzip
+        apk add --no-cache curl jq unzip
         target=/plugins/napcat-plugin-gscore-adapter
         mkdir -p "$$target"
         curl -fsSL "$$NAPCAT_GSCORE_ADAPTER_ZIP_URL" -o /tmp/napcat-plugin-gscore-adapter.zip
         unzip -o /tmp/napcat-plugin-gscore-adapter.zip -d "$$target"
-        echo "NapCat GScore adapter installed in /app/napcat/plugins/napcat-plugin-gscore-adapter."
+
+        config_dir=/config/plugins/napcat-plugin-gscore-adapter
+        config_file="$$config_dir/config.json"
+        plugins_file=/config/plugins.json
+        mkdir -p "$$config_dir"
+        [ -s "$$config_file" ] || printf '{}\n' >"$$config_file"
+        jq \
+          --arg url 'ws://gscore:8765' \
+          --arg token "$$GSCORE_WS_TOKEN" \
+          --arg master "$$NAPCAT_MASTER_QQ" \
+          '.gscoreEnable = true | .gscoreUrl = $$url | .gscoreToken = $$token | .masterQQ = $$master' \
+          "$$config_file" >"$$config_file.tmp"
+        mv "$$config_file.tmp" "$$config_file"
+
+        [ -s "$$plugins_file" ] || printf '{}\n' >"$$plugins_file"
+        jq '.["napcat-plugin-gscore-adapter"] = true' \
+          "$$plugins_file" >"$$plugins_file.tmp"
+        mv "$$plugins_file.tmp" "$$plugins_file"
+
+        chown -R "$$NAPCAT_UID:$$NAPCAT_GID" "$$config_dir" "$$plugins_file" "$$target"
+        chmod 600 "$$config_file" "$$plugins_file"
+        echo "NapCat GScore adapter installed, enabled, and configured for ws://gscore:8765."
     volumes:
       - ${DATA_ROOT:-/opt/nag-data}/napcat/plugins:/plugins
+      - ${DATA_ROOT:-/opt/nag-data}/napcat/config:/config
     networks:
       - nag-net
