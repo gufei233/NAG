@@ -413,6 +413,44 @@ compose() {
   "${COMPOSE[@]}" "$@"
 }
 
+wait_gscore_ready() {
+  local stage="$1"
+  local attempt
+
+  log "waiting for GsCore WebUI (${stage})"
+  for ((attempt = 1; attempt <= 90; attempt++)); do
+    if compose exec -T gscore /venv/bin/python -c \
+      'from urllib.request import urlopen; response = urlopen("http://127.0.0.1:8765/app/", timeout=3); assert response.status == 200' \
+      >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+
+  compose logs --tail=100 gscore || true
+  die "GsCore WebUI did not become ready within 180 seconds (${stage})"
+}
+
+wait_napcat_webui_token() {
+  local attempt
+  local token=""
+
+  for ((attempt = 1; attempt <= 60; attempt++)); do
+    token="$(
+      compose logs --no-color napcat 2>/dev/null \
+        | sed -n 's/.*WebUi Token:[[:space:]]*\([^[:space:]]*\).*/\1/p' \
+        | tail -n 1 || true
+    )"
+    if [[ -n "$token" ]]; then
+      printf '%s' "$token"
+      return 0
+    fi
+    sleep 2
+  done
+
+  return 1
+}
+
 compose config --quiet
 
 if [[ "$ADAPTER_KIND" == "napcat" ]]; then
@@ -446,6 +484,8 @@ if (( ! venv_ready )); then
   die "GsCore did not create /venv/bin/python and data/config.json within 120 seconds"
 fi
 
+wait_gscore_ready "before configuring the WebSocket token"
+
 log "configuring the GsCore WebSocket token"
 compose exec -T gscore /venv/bin/python - "$GSCORE_WS_TOKEN" <<'PY'
 import json
@@ -461,6 +501,12 @@ config_path.write_text(
 )
 PY
 compose restart gscore
+wait_gscore_ready "after configuring the WebSocket token"
+
+if ((INSTALL_WUWA || INSTALL_WUWA_DEPS)); then
+  log "stopping GsCore while installing its plugins and dependencies"
+  compose stop gscore
+fi
 
 if ((INSTALL_WUWA)); then
   log "cloning or updating the Wuthering Waves plugin suite"
@@ -482,8 +528,12 @@ fi
 
 log "starting selected services"
 compose up -d
-if ((INSTALL_WUWA || INSTALL_WUWA_DEPS)); then
-  compose restart gscore
+wait_gscore_ready "after installing plugins and dependencies"
+
+NAPCAT_WEBUI_TOKEN=""
+log "waiting for the NapCat WebUI token"
+if ! NAPCAT_WEBUI_TOKEN="$(wait_napcat_webui_token)"; then
+  warn "NapCat started, but its WebUI token was not found in logs within 120 seconds"
 fi
 compose ps
 
@@ -495,6 +545,11 @@ WebUI：
   GsCore: http://${BIND_IP}:${GSCORE_PORT}/app/
   NapCat: http://${BIND_IP}:${NAPCAT_WEBUI_PORT}
 EOF
+if [[ -n "$NAPCAT_WEBUI_TOKEN" ]]; then
+  printf '  NapCat Token: %s\n' "$NAPCAT_WEBUI_TOKEN"
+  printf '  NapCat 登录地址: http://%s:%s/webui?token=%s\n' \
+    "$BIND_IP" "$NAPCAT_WEBUI_PORT" "$NAPCAT_WEBUI_TOKEN"
+fi
 if [[ "$MODE" != "napcat" ]]; then
   printf '  AstrBot: http://%s:%s\n' "$BIND_IP" "$ASTRBOT_WEBUI_PORT"
 fi

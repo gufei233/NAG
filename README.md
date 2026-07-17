@@ -358,6 +358,8 @@ http://127.0.0.1:6185
 
 通过 `install.sh` 选择 AstrBot 适配器模式时，安装器会在首次安装时自动创建该插件配置，写入 `gscore:8765` 和与 GsCore 相同的共享 `WS_TOKEN`；token 也会保存在权限为 `600` 的管理环境文件中。已有 AstrBot 插件配置不会被覆盖。
 
+安装器会等待 GsCore WebUI 完全就绪后再执行配置和插件安装，避免在配置文件写入期间重启；NapCat 启动后还会从容器日志中提取并打印 WebUI Token 和带 Token 的登录地址。
+
 ### 3. 登录 NapCat
 
 打开：
