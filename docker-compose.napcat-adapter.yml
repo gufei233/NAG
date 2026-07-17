@@ -1,0 +1,30 @@
+services:
+  napcat:
+    # The direct GScore adapter is blocked by the plugin whitelist in v4.18.6+.
+    # Keep this hard-coded so an environment override cannot upgrade it by accident.
+    image: mlikiowa/napcat-docker:v4.18.5
+    volumes:
+      - ${DATA_ROOT:-/opt/nag-data}/napcat/plugins:/app/napcat/plugins
+
+  napcat-gscore-adapter-init:
+    image: alpine:latest
+    container_name: nag-napcat-gscore-adapter-init
+    profiles:
+      - init
+    environment:
+      NAPCAT_GSCORE_ADAPTER_ZIP_URL: ${NAPCAT_GSCORE_ADAPTER_ZIP_URL:-https://github.com/xiowo/napcat-plugin-gscore-adapter/releases/latest/download/napcat-plugin-gscore-adapter.zip}
+    entrypoint:
+      - /bin/sh
+      - -lc
+    command:
+      - |
+        set -eu
+        apk add --no-cache curl unzip
+        mkdir -p /plugins
+        curl -fsSL "$$NAPCAT_GSCORE_ADAPTER_ZIP_URL" -o /tmp/napcat-plugin-gscore-adapter.zip
+        unzip -o /tmp/napcat-plugin-gscore-adapter.zip -d /plugins
+        echo "NapCat GScore adapter installed in /app/napcat/plugins."
+    volumes:
+      - ${DATA_ROOT:-/opt/nag-data}/napcat/plugins:/plugins
+    networks:
+      - nag-net

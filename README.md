@@ -2,6 +2,34 @@
 
 NapCat + AstrBot + GsCore 的 Docker Compose 部署模板。
 
+## 交互式一键安装
+
+Linux 主机已安装 Docker Engine 和 Docker Compose V2 时，可以直接运行：
+
+```bash
+bash install.sh
+```
+
+安装器会询问并支持三种部署方式：
+
+1. NapCat + AstrBot + GsCore，使用 AstrBot GScore 适配器；
+2. NapCat + AstrBot + GsCore，使用 NapCat GScore 适配器；
+3. NapCat + GsCore，使用 NapCat GScore 适配器（NG 轻量版）。
+
+后两种方式会强制使用 `mlikiowa/napcat-docker:v4.18.5`。安装器还可以创建持久化目录、固定 NapCat MAC、克隆鸣潮插件套件并安装 Playwright、OpenCV、字体、拼音和 Chromium 等额外依赖。
+
+无人值守地采用推荐值，或仅查看执行计划：
+
+```bash
+bash install.sh --mode astrbot --yes
+bash install.sh --mode hybrid --yes --dry-run
+bash install.sh --mode napcat --yes --dry-run
+```
+
+安装器不会代替用户登录 QQ，也不会写入 GsCore/AstrBot/NapCat 的业务 Token 和账号配置；完成后会输出相应的 WebUI 配置步骤。私有 Compose 环境保存在被 Git 忽略的 `.installer/` 目录。
+
+同一组默认端口和容器名一次只应运行一种部署方式。从 AstrBot 适配器模式切换到 NapCat 适配器混合模式时，还需要在 AstrBot 中停用已有的 GScore 适配器，避免同一条指令被重复处理。
+
 本仓库面向个人 QQ 路线：
 
 ```text

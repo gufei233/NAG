@@ -2,6 +2,8 @@
 
 NapCat + GsCore 的轻量 Docker Compose 部署模板。
 
+也可以在仓库根目录运行 `bash install.sh`，然后选择第 3 种部署方式，由交互式安装器完成本节中的容器、插件和额外依赖初始化。
+
 本目录面向不需要 AstrBot / LLM / 多平台管理，只想让 NapCat 直接把 QQ 消息转发给 GsCore 的用户：
 
 ```text
