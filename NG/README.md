@@ -10,6 +10,9 @@ GsCore <-> napcat-plugin-gscore-adapter <-> NapCatQQ <-> QQ
 
 Sayu 文档把 `napcat-plugin-gscore-adapter` 列在“协议端插件直接链接”方案中。插件本身运行在 NapCat 内，通过 WebSocket 连接 GsCore，因此本 compose 只需要启动 `gscore` 和 `napcat` 两个常驻容器。
 
+> [!IMPORTANT]
+> NG 默认将 NapCat 镜像固定为 `mlikiowa/napcat-docker:v4.18.5`。这是 NapCatQQ 在 v4.18.6 引入官方插件白名单和敏感词检测前的最后一个正式版本，用于保证 `napcat-plugin-gscore-adapter` 可以加载。不要把 `NAPCAT_IMAGE` 改回 `latest` 或升级到 v4.18.6 及以上，除非该插件已进入官方白名单或完成兼容适配。
+
 ## 和 NAG 版本的区别
 
 ```text

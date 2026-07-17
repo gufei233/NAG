@@ -30,7 +30,9 @@ services:
       - ng-net
 
   napcat:
-    image: ${NAPCAT_IMAGE:-mlikiowa/napcat-docker:latest}
+    # v4.18.5 is the final release before the official-plugin whitelist and
+    # sensitive-word checks introduced in NapCatQQ v4.18.6.
+    image: ${NAPCAT_IMAGE:-mlikiowa/napcat-docker:v4.18.5}
     container_name: ng-napcat
     restart: unless-stopped
     environment:
