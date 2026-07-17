@@ -138,8 +138,9 @@ NapCat WebUI -> 插件管理 -> 上传/安装/启用 napcat-plugin-gscore-adapte
 也可以从插件 release 下载 zip 后解压到宿主机：
 
 ```bash
-cd /opt/ng-data/napcat/plugins
-unzip /path/to/napcat-plugin-gscore-adapter.zip
+mkdir -p /opt/ng-data/napcat/plugins/napcat-plugin-gscore-adapter
+unzip /path/to/napcat-plugin-gscore-adapter.zip \
+  -d /opt/ng-data/napcat/plugins/napcat-plugin-gscore-adapter
 docker restart ng-napcat
 ```
 

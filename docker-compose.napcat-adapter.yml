@@ -20,10 +20,11 @@ services:
       - |
         set -eu
         apk add --no-cache curl unzip
-        mkdir -p /plugins
+        target=/plugins/napcat-plugin-gscore-adapter
+        mkdir -p "$$target"
         curl -fsSL "$$NAPCAT_GSCORE_ADAPTER_ZIP_URL" -o /tmp/napcat-plugin-gscore-adapter.zip
-        unzip -o /tmp/napcat-plugin-gscore-adapter.zip -d /plugins
-        echo "NapCat GScore adapter installed in /app/napcat/plugins."
+        unzip -o /tmp/napcat-plugin-gscore-adapter.zip -d "$$target"
+        echo "NapCat GScore adapter installed in /app/napcat/plugins/napcat-plugin-gscore-adapter."
     volumes:
       - ${DATA_ROOT:-/opt/nag-data}/napcat/plugins:/plugins
     networks:
