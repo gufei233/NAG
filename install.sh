@@ -482,6 +482,26 @@ wait_napcat_webui_token() {
   return 1
 }
 
+wait_astrbot_initial_password() {
+  local attempt
+  local password=""
+
+  for ((attempt = 1; attempt <= 60; attempt++)); do
+    password="$(
+      compose logs --no-color astrbot 2>/dev/null \
+        | sed -n 's/.*Initial password:[[:space:]]*\([[:graph:]][[:graph:]]*\).*/\1/p' \
+        | tail -n 1 || true
+    )"
+    if [[ -n "$password" ]]; then
+      printf '%s' "$password"
+      return 0
+    fi
+    sleep 2
+  done
+
+  return 1
+}
+
 read_gscore_register_code() {
   compose exec -T gscore /venv/bin/python -c '
 import json
@@ -584,6 +604,14 @@ log "waiting for the NapCat WebUI token"
 if ! NAPCAT_WEBUI_TOKEN="$(wait_napcat_webui_token)"; then
   warn "NapCat started, but its WebUI token was not found in logs within 120 seconds"
 fi
+
+ASTRBOT_INITIAL_PASSWORD=""
+if [[ "$MODE" != "napcat" ]]; then
+  log "waiting for the AstrBot initial WebUI password"
+  if ! ASTRBOT_INITIAL_PASSWORD="$(wait_astrbot_initial_password)"; then
+    warn "AstrBot started, but no initial WebUI password was found in its current logs; this is expected when reusing existing AstrBot data"
+  fi
+fi
 compose ps
 
 cat <<EOF
@@ -602,6 +630,12 @@ if [[ -n "$NAPCAT_WEBUI_TOKEN" ]]; then
 fi
 if [[ "$MODE" != "napcat" ]]; then
   printf '  AstrBot: http://%s:%s\n' "$BIND_IP" "$ASTRBOT_WEBUI_PORT"
+  printf '  AstrBot 用户名: astrbot\n'
+  if [[ -n "$ASTRBOT_INITIAL_PASSWORD" ]]; then
+    printf '  AstrBot 初始密码: %s\n' "$ASTRBOT_INITIAL_PASSWORD"
+  else
+    printf '  AstrBot 初始密码: 未从本次启动日志中读取到\n'
+  fi
 fi
 
 cat <<EOF

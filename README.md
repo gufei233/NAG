@@ -16,7 +16,7 @@ bash install.sh
 2. NapCat + AstrBot + GsCore，使用 NapCat GScore 适配器；
 3. NapCat + GsCore，使用 NapCat GScore 适配器（NG 轻量版）。
 
-后两种方式会强制使用 `mlikiowa/napcat-docker:v4.18.5`。三种方式都会询问主人 QQ 并写入 GsCore 的 `masters`；使用 NapCat GScore 适配器时，还会把同一主人列表同步给适配器，自动配置连接地址与共享 `WS_TOKEN`。安装器还可创建持久化目录、固定 NapCat MAC、克隆鸣潮插件套件及安装 Playwright、OpenCV、字体、拼音和 Chromium 等额外依赖。安装完成时会直接显示 GsCore 首次注册所需的 `REGISTER_CODE`。
+后两种方式会强制使用 `mlikiowa/napcat-docker:v4.18.5`。三种方式都会询问主人 QQ 并写入 GsCore 的 `masters`；使用 NapCat GScore 适配器时，还会把同一主人列表同步给适配器，自动配置连接地址与共享 `WS_TOKEN`。安装器还可创建持久化目录、固定 NapCat MAC、克隆鸣潮插件套件及安装 Playwright、OpenCV、字体、拼音和 Chromium 等额外依赖。安装完成时会直接显示 GsCore 首次注册所需的 `REGISTER_CODE`、NapCat WebUI Token，以及选项 1/2 首次启动时由 AstrBot 随机生成的 WebUI 初始密码。
 
 无人值守地采用推荐值，或仅查看执行计划：
 
