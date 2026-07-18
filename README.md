@@ -2,58 +2,17 @@
 
 NapCat + AstrBot + GsCore 的 Docker Compose 部署模板。
 
-## 交互式一键安装
+## 三条部署路线
 
-Linux 主机已安装 Docker Engine 和 Docker Compose V2 时，可以直接运行：
+本仓库在同一个 `main` 分支内提供三条路线：
 
-```bash
-bash install.sh
-```
+1. **AstrBot 适配器（推荐）**：`GsCore <-> AstrBot GScore 适配器 <-> AstrBot <-> NapCatQQ`。功能完整，适合需要 AstrBot 的 LLM、WebUI 管理和多平台能力的用户。
+2. **NapCat 适配器 + AstrBot**：`GsCore <-> NapCat GScore 适配器 <-> NapCatQQ`，同时保留 AstrBot，并通过 OneBot 连接 NapCat。适合希望由 NapCat 直接处理 GScore 指令、同时继续使用 AstrBot 的用户。
+3. **NapCat 适配器轻量版（NG）**：`GsCore <-> NapCat GScore 适配器 <-> NapCatQQ`，不安装 AstrBot。适合只需要 QQ 和 GsCore 的用户，详见 [NG 说明](NG/README.md)。
 
-安装器会询问并支持三种部署方式：
+路线 2 和路线 3 会固定使用 `mlikiowa/napcat-docker:v4.18.5`，避免 NapCat v4.18.6 起的官方插件白名单影响 GScore 适配器。三条路线的默认端口和容器名存在冲突，不能在同一台主机上以默认配置同时运行。
 
-1. NapCat + AstrBot + GsCore，使用 AstrBot GScore 适配器；
-2. NapCat + AstrBot + GsCore，使用 NapCat GScore 适配器；
-3. NapCat + GsCore，使用 NapCat GScore 适配器（NG 轻量版）。
-
-后两种方式会强制使用 `mlikiowa/napcat-docker:v4.18.5`。三种方式都会询问主人 QQ 并写入 GsCore 的 `masters`；选项 1/2 还会将同一列表写入 AstrBot 的管理员 ID，使用 NapCat GScore 适配器时也会把它同步给适配器。安装器会自动配置连接地址与共享 `WS_TOKEN`，还可创建持久化目录、固定 NapCat MAC、克隆鸣潮插件套件及安装 Playwright、OpenCV、字体、拼音和 Chromium 等额外依赖。安装完成时会直接显示 GsCore 首次注册所需的 `REGISTER_CODE`、NapCat WebUI Token，以及选项 1/2 首次启动时由 AstrBot 随机生成的 WebUI 初始密码。
-
-无人值守地采用推荐值，或仅查看执行计划：
-
-```bash
-bash install.sh --mode astrbot --yes --master-qq 123456789
-bash install.sh --mode hybrid --yes --master-qq 123456789 --dry-run
-bash install.sh --mode napcat --yes --master-qq 123456789 --dry-run
-```
-
-安装器不会代替用户登录 QQ 或在 GsCore WebUI 完成首次注册。它会自动配置 GsCore 主人列表、生成适配器共享的 `WS_TOKEN`，并把私有 Compose 环境保存在被 Git 忽略且权限为 `600` 的 `.installer/` 目录。
-
-同一组默认端口和容器名一次只应运行一种部署方式。从 AstrBot 适配器模式切换到 NapCat 适配器混合模式时，还需要在 AstrBot 中停用已有的 GScore 适配器，避免同一条指令被重复处理。
-
-本仓库面向个人 QQ 路线：
-
-```text
-GsCore <-> AstrBot <-> NapCatQQ <-> QQ
-```
-
-如果你使用 QQ 官方机器人，或强依赖 NoneBot2 插件生态，请参考完整教程里的 NoneBot2 路线；本 compose 不包含 NoneBot2。
-
-## 路线选择
-
-本仓库现在提供两套 compose：
-
-```text
-NAG: GsCore <-> AstrBot <-> NapCatQQ
-NG:  GsCore <-> NapCat 插件 <-> NapCatQQ
-```
-
-- 默认使用本页的 NAG 版本：适合需要 AstrBot 的 LLM、WebUI 管理、多平台能力，或希望通过 AstrBot 统一接入 GsCore 的用户。
-- 可选使用 [NG 轻量版本](NG/README.md)：适合不需要 AstrBot，只想让 NapCat 通过协议端插件直接连接 GsCore 的用户。
-
-NG 版本文件：
-
-- [NG/docker-compose.yml](NG/docker-compose.yml)
-- [NG/README.md](NG/README.md)
+本仓库面向个人 QQ。使用 QQ 官方机器人或强依赖 NoneBot2 插件生态时，请参考相应项目的完整教程；本仓库不包含 NoneBot2。
 
 ## 组件
 
@@ -61,7 +20,7 @@ NG 版本文件：
 - **AstrBot**：机器人中控与 WebUI，负责接入 NapCat，并通过插件转发 GsCore 指令。
 - **NapCatQQ**：QQ 协议端，负责登录 QQ 并提供 OneBot V11 通信。
 
-## 部署前准备
+## 安装 Docker
 
 推荐使用 Linux 服务器。下文以 Ubuntu / Debian 系为例。
 
@@ -129,47 +88,95 @@ sudo usermod -aG docker "$USER"
 newgrp docker
 ```
 
-## 目录规划
+## 两种使用方式
 
-仓库目录只放 compose、README 和模板文件；运行数据放到仓库外，默认是：
+三条路线都可以通过交互式一键脚本安装，也可以使用 Docker Compose 手动部署。一键脚本适合首次使用；手动部署适合希望自行维护 `.env`、Compose 参数和初始化顺序的用户。
 
-```text
-/opt/nag-data
-```
-
-这样可以避免 `git pull`、`git status`、`git clean` 影响机器人数据、QQ 登录态和配置文件。
-
-## 快速开始
+### 方式一：交互式一键脚本（推荐）
 
 ```bash
 git clone https://github.com/gufei233/NAG.git
 cd NAG
+bash install.sh
+```
 
+脚本会先询问主人 QQ，再让用户选择三条路线之一。它会自动创建持久化目录、配置 GsCore 主人列表、AstrBot 管理员 ID、适配器连接地址和共享 `WS_TOKEN`，还可固定 NapCat MAC、克隆鸣潮插件套件并安装 Playwright、OpenCV、字体、拼音和 Chromium 等额外依赖。
+
+安装完成后，脚本会打印 GsCore 首次注册所需的 `REGISTER_CODE`、NapCat WebUI Token，以及路线 1/2 中 AstrBot 首次启动时随机生成的 WebUI 初始密码。脚本不会代替用户登录 QQ 或完成 GsCore WebUI 的首次注册。
+
+无人值守地采用推荐值，或仅查看执行计划：
+
+```bash
+bash install.sh --mode astrbot --yes --master-qq 123456789
+bash install.sh --mode hybrid --yes --master-qq 123456789 --dry-run
+bash install.sh --mode napcat --yes --master-qq 123456789 --dry-run
+```
+
+私有 Compose 环境会保存在被 Git 忽略且权限为 `600` 的 `.installer/` 目录。
+
+### 方式二：传统手动 Docker Compose 部署
+
+先克隆仓库并选择路线。手动部署前请编辑对应的 `.env`；需要适配器自动初始化时，至少填写 `GSCORE_WS_TOKEN` 和 `NAPCAT_MASTER_QQ`，并确保 GsCore 使用相同的 WebSocket Token。
+
+#### 路线 1：AstrBot GScore 适配器
+
+```bash
+git clone https://github.com/gufei233/NAG.git
+cd NAG
 cp .env.example .env
-```
 
-如果你是 root 用户部署：
-
-```bash
-mkdir -p /opt/nag-data/{astrbot,napcat/config,napcat/qq,gscore/data,gscore/plugins}
-```
-
-如果你不是 root 用户部署，先创建目录并把 `DATA_ROOT` 交给当前用户，再启动 compose：
-
-```bash
-sudo mkdir -p /opt/nag-data/{astrbot,napcat/config,napcat/qq,gscore/data,gscore/plugins}
-sudo chown -R "$(id -u):$(id -g)" /opt/nag-data
-sed -i "s/^NAPCAT_UID=.*/NAPCAT_UID=$(id -u)/" .env
-sed -i "s/^NAPCAT_GID=.*/NAPCAT_GID=$(id -g)/" .env
-```
-
-然后启动：
-
-```bash
+mkdir -p /opt/nag-data/{astrbot,napcat/config,napcat/plugins,napcat/qq,gscore/data,gscore/plugins}
 docker compose config
 docker compose up -d
+docker compose --profile init run --rm astrbot-plugin-init
+docker restart nag-astrbot
 docker compose ps
 ```
+
+#### 路线 2：NapCat GScore 适配器 + AstrBot
+
+```bash
+git clone https://github.com/gufei233/NAG.git
+cd NAG
+cp .env.example .env
+
+mkdir -p /opt/nag-data/{astrbot,napcat/config,napcat/plugins,napcat/qq,gscore/data,gscore/plugins}
+docker compose -f docker-compose.yml -f docker-compose.napcat-adapter.yml config
+docker compose -f docker-compose.yml -f docker-compose.napcat-adapter.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.napcat-adapter.yml --profile init run --rm napcat-gscore-adapter-init
+docker restart nag-napcat
+docker compose -f docker-compose.yml -f docker-compose.napcat-adapter.yml ps
+```
+
+该叠加 Compose 会强制固定 NapCat v4.18.5。AstrBot 的 OneBot 平台、管理员 ID，以及 GsCore 主人列表仍需按下文的首次配置说明手动设置。
+
+#### 路线 3：NapCat GScore 适配器轻量版（NG）
+
+```bash
+git clone https://github.com/gufei233/NAG.git
+cd NAG/NG
+cp .env.example .env
+
+mkdir -p /opt/ng-data/{napcat/config,napcat/plugins,napcat/qq,gscore/data,gscore/plugins}
+docker compose config
+docker compose up -d
+docker compose --profile init run --rm napcat-gscore-adapter-init
+docker restart ng-napcat
+docker compose ps
+```
+
+非 root 用户需要用 `sudo` 创建数据目录、将目录所有权交给当前用户，并把 `.env` 中的 `NAPCAT_UID`、`NAPCAT_GID` 改为 `id -u`、`id -g` 的结果。
+
+## 目录规划
+
+仓库目录只放 Compose、README 和模板文件；运行数据放到仓库外：
+
+```text
+路线 1/2: /opt/nag-data
+路线 3:   /opt/ng-data
+```
+
+这样可以避免 `git pull`、`git status`、`git clean` 影响机器人数据、QQ 登录态和配置文件。
 
 ## 默认端口
 
