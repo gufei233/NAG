@@ -6,9 +6,11 @@ NapCat + AstrBot + GsCore 的 Docker Compose 部署模板。
 
 本仓库在同一个 `main` 分支内提供三条路线：
 
-1. **AstrBot 适配器（推荐）**：`GsCore <-> AstrBot GScore 适配器 <-> AstrBot <-> NapCatQQ`。功能完整，适合需要 AstrBot 的 LLM、WebUI 管理和多平台能力的用户。
+1. **AstrBot 适配器**：`GsCore <-> AstrBot GScore 适配器 <-> AstrBot <-> NapCatQQ`。适合需要 AstrBot 的 LLM、WebUI 管理和多平台能力，并愿意自行调试适配器的用户。
 2. **NapCat 适配器 + AstrBot**：`GsCore <-> NapCat GScore 适配器 <-> NapCatQQ`，同时保留 AstrBot，并通过 OneBot 连接 NapCat。适合希望由 NapCat 直接处理 GScore 指令、同时继续使用 AstrBot 的用户。
-3. **NapCat 适配器轻量版（NG）**：`GsCore <-> NapCat GScore 适配器 <-> NapCatQQ`，不安装 AstrBot。适合只需要 QQ 和 GsCore 的用户，详见 [NG 说明](NG/README.md)。
+3. **NapCat 适配器轻量版（NG，推荐）**：`GsCore <-> NapCat GScore 适配器 <-> NapCatQQ`，不安装 AstrBot。适合只需要 QQ 和 GsCore 的用户，详见 [NG 说明](NG/README.md)。
+
+目前 AstrBot 的 GScore 适配器完成度相对较低，建议优先选择路线 2 或路线 3；如果不需要 AstrBot 的其他功能，推荐使用路线 3（NG 轻量版）。
 
 路线 2 和路线 3 会固定使用 `mlikiowa/napcat-docker:v4.18.5`，避免 NapCat v4.18.6 起的官方插件白名单影响 GScore 适配器。三条路线的默认端口和容器名存在冲突，不能在同一台主机上以默认配置同时运行。
 
