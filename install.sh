@@ -338,9 +338,13 @@ NapCat 端口：$NAPCAT_WEBUI_PORT
 EOF
   if [[ "$MODE" != "napcat" ]]; then
     printf 'AstrBot 端口：%s\n' "$ASTRBOT_WEBUI_PORT"
+    printf 'OneBot 连接：自动配置 NapCat -> ws://astrbot:6199/ws\n'
   fi
   printf 'NapCat 镜像：%s\n' "$NAPCAT_IMAGE"
   printf 'GsCore 主人列表：%s（自动配置）\n' "$NAPCAT_MASTER_QQ"
+  if [[ "$MODE" != "napcat" ]]; then
+    printf 'AstrBot 管理员 ID：%s（自动配置）\n' "$NAPCAT_MASTER_QQ"
+  fi
   if [[ "$ADAPTER_KIND" == "napcat" ]]; then
     printf 'GScore 适配器：自动启用并连接 ws://gscore:8765\n'
   fi
@@ -502,6 +506,39 @@ wait_astrbot_initial_password() {
   return 1
 }
 
+wait_astrbot_config() {
+  local attempt
+
+  log "waiting for AstrBot to create cmd_config.json"
+  for ((attempt = 1; attempt <= 60; attempt++)); do
+    if compose exec -T astrbot sh -c 'test -s /AstrBot/data/cmd_config.json' \
+      >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+
+  compose logs --tail=100 astrbot || true
+  die "AstrBot did not create data/cmd_config.json within 120 seconds"
+}
+
+wait_astrbot_onebot_listener() {
+  local attempt
+
+  log "waiting for the AstrBot OneBot v11 listener on port 6199"
+  for ((attempt = 1; attempt <= 60; attempt++)); do
+    if compose exec -T astrbot python -c \
+      'import socket; connection = socket.create_connection(("127.0.0.1", 6199), timeout=3); connection.close()' \
+      >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+
+  compose logs --tail=100 astrbot || true
+  die "AstrBot OneBot v11 listener did not become ready on port 6199 within 120 seconds"
+}
+
 read_gscore_register_code() {
   compose exec -T gscore /venv/bin/python -c '
 import json
@@ -593,6 +630,15 @@ log "starting selected services"
 compose up -d
 wait_gscore_ready "after installing plugins and dependencies"
 
+if [[ "$MODE" != "napcat" ]]; then
+  wait_astrbot_config
+  log "configuring the AstrBot OneBot v11 platform and NapCat reverse WebSocket client"
+  compose stop napcat astrbot
+  compose --profile init run --rm astrbot-onebot-init
+  compose up -d astrbot napcat
+  wait_astrbot_onebot_listener
+fi
+
 GSCORE_REGISTER_CODE=""
 if ! GSCORE_REGISTER_CODE="$(read_gscore_register_code)" || [[ -z "$GSCORE_REGISTER_CODE" ]]; then
   warn "GsCore started, but REGISTER_CODE could not be read from data/config.json"
@@ -646,13 +692,13 @@ cat <<EOF
 EOF
 if [[ "$ADAPTER_KIND" == "astrbot" ]]; then
   cat <<'EOF'
-  3. 在 AstrBot 启用 aiocqhttp/OneBot 平台；GScore 适配器已预配置为 gscore:8765 和共享 WS_TOKEN。
+  3. AstrBot 的 aiocqhttp/OneBot 平台及 NapCat 反向 WebSocket 已自动配置；扫码登录 QQ 后会自动建立连接。GScore 适配器已预配置为 gscore:8765 和共享 WS_TOKEN。
   4. 如手动修改 WS_TOKEN，请保持 GsCore 与 AstrBot GScore 适配器中的值一致。
 EOF
 elif [[ "$MODE" == "hybrid" ]]; then
   cat <<'EOF'
   3. NapCat GScore 适配器已自动启用，并已配置连接地址、WS_TOKEN 和主人 QQ。
-  4. 在 AstrBot 配置 OneBot 平台，并让 LLM 忽略 GScore 指令前缀，避免重复回复。
+  4. AstrBot 的 aiocqhttp/OneBot 平台及 NapCat 反向 WebSocket 已自动配置，扫码登录 QQ 后会自动建立连接；请让 LLM 忽略 GScore 指令前缀，避免重复回复。
 EOF
 else
   cat <<'EOF'

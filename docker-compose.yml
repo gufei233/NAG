@@ -116,6 +116,135 @@ services:
     networks:
       - nag-net
 
+  astrbot-onebot-init:
+    image: ${GSCORE_IMAGE:-docker.cnb.cool/gscore-mirror/gsuid_core:latest}
+    container_name: nag-astrbot-onebot-init
+    profiles:
+      - init
+    environment:
+      NAPCAT_MASTER_QQ: ${NAPCAT_MASTER_QQ:-}
+      NAPCAT_UID: ${NAPCAT_UID:-1000}
+      NAPCAT_GID: ${NAPCAT_GID:-1000}
+    entrypoint:
+      - /bin/sh
+      - -lc
+    command:
+      - |
+        set -eu
+        /venv/bin/python - <<'PY'
+        import json
+        import os
+        from pathlib import Path
+
+        admins_id = list(
+            dict.fromkeys(
+                account.strip()
+                for account in os.environ["NAPCAT_MASTER_QQ"].split(",")
+                if account.strip()
+            )
+        )
+
+        def load_json(path):
+            return json.loads(path.read_text(encoding="utf-8-sig"))
+
+        def write_json(path, value, uid=None, gid=None):
+            temporary = path.with_name(path.name + ".tmp")
+            temporary.write_text(
+                json.dumps(value, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            temporary.chmod(0o600)
+            if uid is not None and gid is not None:
+                os.chown(temporary, uid, gid)
+            temporary.replace(path)
+
+        astrbot_path = Path("/AstrBot/data/cmd_config.json")
+        if not astrbot_path.is_file():
+            raise SystemExit(f"Missing {astrbot_path}; start AstrBot once before running this initializer.")
+
+        astrbot_config = load_json(astrbot_path)
+        if admins_id:
+            astrbot_config["admins_id"] = admins_id
+        platforms = astrbot_config.setdefault("platform", [])
+        platform = next(
+            (item for item in platforms if item.get("id") == "napcat"),
+            None,
+        )
+        if platform is None:
+            platform = next(
+                (item for item in platforms if item.get("type") == "aiocqhttp"),
+                None,
+            )
+        if platform is None:
+            platform = {"id": "napcat"}
+            platforms.append(platform)
+        platform.update(
+            {
+                "type": "aiocqhttp",
+                "enable": True,
+                "ws_reverse_host": "0.0.0.0",
+                "ws_reverse_port": 6199,
+                "ws_reverse_token": "",
+            }
+        )
+        write_json(astrbot_path, astrbot_config)
+
+        napcat_dir = Path("/NapCat/config")
+        napcat_paths = sorted(napcat_dir.glob("onebot11*.json"))
+        if not napcat_paths:
+            napcat_paths = [napcat_dir / "onebot11.json"]
+            napcat_paths[0].parent.mkdir(parents=True, exist_ok=True)
+            napcat_paths[0].write_text(
+                '{"network":{"httpServers":[],"httpSseServers":[],"httpClients":[],"websocketServers":[],"websocketClients":[],"plugins":[]}}\n',
+                encoding="utf-8",
+            )
+
+        uid = int(os.environ["NAPCAT_UID"])
+        gid = int(os.environ["NAPCAT_GID"])
+        for napcat_path in napcat_paths:
+            napcat_config = load_json(napcat_path)
+            network = napcat_config.setdefault("network", {})
+            clients = network.setdefault("websocketClients", [])
+            client = next(
+                (
+                    item
+                    for item in clients
+                    if item.get("url") == "ws://astrbot:6199/ws"
+                    or item.get("name") in {"rws", "AstrBot"}
+                ),
+                None,
+            )
+            if client is None:
+                client = {}
+                clients.append(client)
+            client.update(
+                {
+                    "enable": True,
+                    "name": "AstrBot",
+                    "url": "ws://astrbot:6199/ws",
+                    "reportSelfMessage": False,
+                    "messagePostFormat": "array",
+                    "token": "",
+                    "debug": False,
+                    "heartInterval": 30000,
+                    "reconnectInterval": 5000,
+                }
+            )
+            write_json(napcat_path, napcat_config, uid, gid)
+
+        print(
+            f"Configured {len(admins_id)} AstrBot administrator(s), "
+            "OneBot v11 on 0.0.0.0:6199, and "
+            f"{len(napcat_paths)} NapCat WebSocket client config(s)."
+        )
+        PY
+    volumes:
+      - ${DATA_ROOT:-/opt/nag-data}/astrbot:/AstrBot/data
+      - ${DATA_ROOT:-/opt/nag-data}/napcat/config:/NapCat/config
+      - gscore-venv:/venv
+    networks:
+      - nag-net
+
   gscore-xwuid-deps-init:
     image: ${GSCORE_IMAGE:-docker.cnb.cool/gscore-mirror/gsuid_core:latest}
     container_name: nag-gscore-xwuid-deps-init

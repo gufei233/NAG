@@ -16,7 +16,7 @@ bash install.sh
 2. NapCat + AstrBot + GsCore，使用 NapCat GScore 适配器；
 3. NapCat + GsCore，使用 NapCat GScore 适配器（NG 轻量版）。
 
-后两种方式会强制使用 `mlikiowa/napcat-docker:v4.18.5`。三种方式都会询问主人 QQ 并写入 GsCore 的 `masters`；使用 NapCat GScore 适配器时，还会把同一主人列表同步给适配器，自动配置连接地址与共享 `WS_TOKEN`。安装器还可创建持久化目录、固定 NapCat MAC、克隆鸣潮插件套件及安装 Playwright、OpenCV、字体、拼音和 Chromium 等额外依赖。安装完成时会直接显示 GsCore 首次注册所需的 `REGISTER_CODE`、NapCat WebUI Token，以及选项 1/2 首次启动时由 AstrBot 随机生成的 WebUI 初始密码。
+后两种方式会强制使用 `mlikiowa/napcat-docker:v4.18.5`。三种方式都会询问主人 QQ 并写入 GsCore 的 `masters`；选项 1/2 还会将同一列表写入 AstrBot 的管理员 ID，使用 NapCat GScore 适配器时也会把它同步给适配器。安装器会自动配置连接地址与共享 `WS_TOKEN`，还可创建持久化目录、固定 NapCat MAC、克隆鸣潮插件套件及安装 Playwright、OpenCV、字体、拼音和 Chromium 等额外依赖。安装完成时会直接显示 GsCore 首次注册所需的 `REGISTER_CODE`、NapCat WebUI Token，以及选项 1/2 首次启动时由 AstrBot 随机生成的 WebUI 初始密码。
 
 无人值守地采用推荐值，或仅查看执行计划：
 
@@ -332,14 +332,14 @@ GsCore 配置文件主要位于：
 http://127.0.0.1:6185
 ```
 
-首次登录后请修改默认密码。然后配置 NapCat / OneBot V11 平台：
+首次登录后请修改默认密码。使用 `install.sh` 时，安装器会把开头输入的主人 QQ 写入“配置 → 平台配置 → 管理员 ID”，自动在机器人列表创建并启用 NapCat / OneBot V11 平台，同时配置 NapCat 的 WebSocket 客户端；这条容器内连接默认不启用 Token。手动使用 compose 部署时，按下面的值配置：
 
 ```text
 消息平台类别：aiocqhttp / OneBot V11
 启用：开启
 反向 WebSocket 主机：0.0.0.0
 反向 WebSocket 端口：6199
-反向 WebSocket Token：留空，除非你在 NapCat 侧也设置了同一个 Token
+反向 WebSocket Token：留空
 ```
 
 `6199` 不需要映射到宿主机，因为 NapCat 和 AstrBot 在同一个 Docker 网络里通信。
@@ -356,7 +356,7 @@ http://127.0.0.1:6185
 
 注意：这里不要填 `localhost`。在 Docker 容器中，`localhost` 指 AstrBot 容器自己，不是 GsCore 容器；同一 compose 网络内应使用服务名 `gscore`。
 
-通过 `install.sh` 选择 AstrBot 适配器模式时，安装器会在首次安装时自动创建该插件配置，写入 `gscore:8765` 和与 GsCore 相同的共享 `WS_TOKEN`；token 也会保存在权限为 `600` 的管理环境文件中。已有 AstrBot 插件配置不会被覆盖。
+通过 `install.sh` 选择 AstrBot 适配器模式时，安装器会在首次安装时自动创建该插件配置，写入 `gscore:8765` 和与 GsCore 相同的共享 `WS_TOKEN`；token 也会保存在权限为 `600` 的管理环境文件中。已有 AstrBot 插件配置不会被覆盖。选项 1 和选项 2 都会自动配置 AstrBot 与 NapCat 之间的 OneBot 反向 WebSocket，并在重启后检查 AstrBot 是否已监听 `6199`。
 
 安装器会等待 GsCore WebUI 完全就绪后再执行配置和插件安装，避免在配置文件写入期间重启；NapCat 启动后还会从容器日志中提取并打印 WebUI Token 和带 Token 的登录地址。
 
@@ -380,24 +380,24 @@ docker logs --tail=200 nag-napcat
 http://127.0.0.1:6099/webui?token=xxxxx
 ```
 
-登录 NapCat 后扫码登录 QQ。当前 compose 使用：
+登录 NapCat 后扫码登录 QQ。直接手动使用 compose 时，默认使用：
 
 ```yaml
 MODE: astrbot
 ```
 
-这个模式会按 NapCat-Docker 的 AstrBot 预设自动连接：
+这个模式会按 NapCat-Docker 的 AstrBot 预设配置：
 
 ```text
 ws://astrbot:6199/ws
 ```
 
-如果自动配置没有生效，可在 NapCat 网络配置中手动新建 WebSocket 客户端 / 反向 WebSocket：
+扫码登录 QQ 后，NapCat 会使用该客户端连接 AstrBot。使用 `install.sh` 时，地址、启用状态以及两端的空 Token 都会自动写入。如果手动部署时自动配置没有生效，可在 NapCat 网络配置中手动新建 WebSocket 客户端 / 反向 WebSocket：
 
 ```text
 URL：ws://astrbot:6199/ws
 消息格式：Array
-Token：留空，除非 AstrBot 侧也设置了同一个 Token
+Token：留空
 ```
 
 ### 4. 联调
@@ -581,7 +581,7 @@ ls -la /opt/nag-data/napcat/config
 
 ### NapCat 日志里出现 ECONNREFUSED astrbot:6199
 
-说明 NapCat 能解析到 AstrBot 容器，但 AstrBot 还没有监听 6199。检查 AstrBot 的 aiocqhttp / OneBot V11 平台是否启用，端口是否为 `6199`，保存后重启：
+说明 NapCat 能解析到 AstrBot 容器，但 AstrBot 还没有监听 6199。`install.sh` 会自动创建平台并检查监听端口；手动部署时请检查 AstrBot 的 aiocqhttp / OneBot V11 平台是否启用，端口是否为 `6199`，保存后重启：
 
 ```bash
 docker restart nag-astrbot nag-napcat
