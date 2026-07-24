@@ -109,6 +109,8 @@ bash install.sh
 
 安装完成后，脚本会打印 GsCore 首次注册所需的 `REGISTER_CODE`、NapCat WebUI Token，以及路线 1/2 中 AstrBot 首次启动时随机生成的 WebUI 初始密码。启用 BotShepherd 时，也会打印它的随机初始密码。脚本不会代替用户登录 QQ 或完成 GsCore WebUI 的首次注册。
 
+BotShepherd 安装完成后，可再次运行 `bash install.sh` 并选择选项 4，快捷查看、新增、删除或重新应用 BotShepherd 的宿主机端口映射。该操作只重建 `nag-botshepherd`，不会重建其他三个服务。
+
 无人值守地采用推荐值，或仅查看执行计划：
 
 ```bash
@@ -466,6 +468,42 @@ http://127.0.0.1:5111
 ```
 
 配置、数据库和日志分别保存在 `/opt/nag-data/botshepherd/config`、`data` 和 `logs`。如果复用已有数据，安装器不会覆盖现有 WebUI 密码和连接配置。
+
+#### 管理 BotShepherd 宿主机端口
+
+再次运行安装器：
+
+```bash
+bash install.sh
+```
+
+选择：
+
+```text
+4) 管理 BotShepherd 端口映射（已有部署）
+```
+
+管理器支持单个端口和不超过 100 个端口的连续范围，例如：
+
+```text
+127.0.0.1:2537 -> botshepherd:2537
+127.0.0.1:2538-2547 -> botshepherd:2538-2547
+```
+
+映射状态和生成的 Compose 叠加文件保存在 `.installer/`，应用变更时只会短暂重建 `nag-botshepherd`。默认使用 `127.0.0.1`，适合同一服务器上的非容器程序；只有确实需要其他主机连接时才使用 `0.0.0.0`，并应同步限制防火墙或安全组来源。
+
+注意区分连接方向：
+
+- 非容器 NapCat、Lagrange 等 OneBot 客户端主动连接 BotShepherd 时，需要映射其 `client_endpoint` 所使用的端口。
+- 非容器 NoneBot 作为 BotShepherd 下游目标时，通常不需要新增 BotShepherd 映射；在目标端点中填写 `ws://host.docker.internal:<NoneBot端口>/<WebSocket路径>`。NoneBot 必须监听宿主机上容器可达的地址，不能只监听 `127.0.0.1`。
+- 每个 OneBot 客户端仍应在 BotShepherd WebUI 中使用独立连接配置和独立监听端口。
+
+例如新增 `2538` 映射后，在 BotShepherd WebUI 中创建连接：
+
+```text
+客户端端点：ws://0.0.0.0:2538/OneBotv11
+目标端点：ws://host.docker.internal:8080/onebot/v11/ws
+```
 
 ### 5. 联调
 

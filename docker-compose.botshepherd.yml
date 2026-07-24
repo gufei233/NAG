@@ -19,6 +19,8 @@ services:
       - ${DATA_ROOT:-/opt/nag-data}/botshepherd/config:/app/config
       - ${DATA_ROOT:-/opt/nag-data}/botshepherd/data:/app/data
       - ${DATA_ROOT:-/opt/nag-data}/botshepherd/logs:/app/logs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - astrbot
     networks:

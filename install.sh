@@ -45,6 +45,9 @@ Options:
                   astrbot         NapCat + AstrBot + GsCore, AstrBot adapter
                   hybrid          NapCat + AstrBot + GsCore, NapCat adapter
                   napcat          NapCat + GsCore, NapCat adapter
+                  botshepherd-ports
+                                  Manage host port mappings for an existing
+                                  BotShepherd deployment
   --botshepherd
                 Add BotShepherd between NapCat and AstrBot in astrbot or
                 hybrid mode
@@ -106,15 +109,17 @@ choose_mode() {
   1) NapCat + AstrBot + GsCore，使用 AstrBot GScore 适配器
   2) NapCat + AstrBot + GsCore，使用 NapCat GScore 适配器
   3) NapCat + GsCore，使用 NapCat GScore 适配器（轻量版）
+  4) 管理 BotShepherd 端口映射（已有部署）
 EOF
 
   local choice
   while true; do
-    read -r -p "请输入 1、2 或 3: " choice
+    read -r -p "请输入 1、2、3 或 4: " choice
     case "$choice" in
       1) MODE="astrbot"; return ;;
       2) MODE="hybrid"; return ;;
       3) MODE="napcat"; return ;;
+      4) MODE="botshepherd-ports"; return ;;
       *) warn "请输入有效选项" ;;
     esac
   done
@@ -194,7 +199,276 @@ random_mac() {
     "$((RANDOM % 256))" "$((RANDOM % 256))"
 }
 
+parse_port_range() {
+  local value="$1"
+
+  if [[ "$value" =~ ^([0-9]+)(-([0-9]+))?$ ]]; then
+    RANGE_START="${BASH_REMATCH[1]}"
+    RANGE_END="${BASH_REMATCH[3]:-${BASH_REMATCH[1]}}"
+  else
+    return 1
+  fi
+
+  validate_port port "$RANGE_START"
+  validate_port port "$RANGE_END"
+  ((10#$RANGE_START <= 10#$RANGE_END)) || die "port range start must not exceed its end"
+  ((10#$RANGE_END - 10#$RANGE_START < 100)) || \
+    die "a single managed port range may contain at most 100 ports"
+}
+
+port_ranges_overlap() {
+  local first="$1"
+  local second="$2"
+  local first_start first_end second_start second_end
+
+  parse_port_range "$first"
+  first_start="$RANGE_START"
+  first_end="$RANGE_END"
+  parse_port_range "$second"
+  second_start="$RANGE_START"
+  second_end="$RANGE_END"
+
+  ((10#$first_start <= 10#$second_end && 10#$second_start <= 10#$first_end))
+}
+
+choose_botshepherd_env_file() {
+  local candidates=()
+  local candidate
+  local choice
+
+  for candidate in \
+    "${STATE_DIR}/astrbot-botshepherd.env" \
+    "${STATE_DIR}/hybrid-botshepherd.env"; do
+    [[ -f "$candidate" ]] && candidates+=("$candidate")
+  done
+
+  ((${#candidates[@]} > 0)) || \
+    die "no BotShepherd installer environment found; first install route 1 or 2 with BotShepherd enabled"
+
+  if ((${#candidates[@]} == 1)); then
+    MANAGED_ENV_FILE="${candidates[0]}"
+    return
+  fi
+
+  printf '\n检测到多个 BotShepherd 安装环境：\n'
+  for ((choice = 0; choice < ${#candidates[@]}; choice++)); do
+    printf '  %d) %s\n' "$((choice + 1))" "$(basename "${candidates[$choice]}")"
+  done
+
+  while true; do
+    read -r -p "请选择当前正在使用的环境: " choice
+    if [[ "$choice" =~ ^[0-9]+$ ]] \
+      && ((10#$choice >= 1 && 10#$choice <= ${#candidates[@]})); then
+      MANAGED_ENV_FILE="${candidates[$((10#$choice - 1))]}"
+      return
+    fi
+    warn "请输入有效选项"
+  done
+}
+
+write_botshepherd_ports_override() {
+  local temporary="${BOTSHEPHERD_PORTS_OVERRIDE}.tmp"
+  local entry bind_ip port_spec
+
+  if [[ -s "$BOTSHEPHERD_PORTS_STATE" ]]; then
+    {
+      printf 'services:\n'
+      printf '  botshepherd:\n'
+      printf '    ports:\n'
+      while IFS='|' read -r bind_ip port_spec; do
+        [[ -n "$bind_ip" && -n "$port_spec" ]] || continue
+        printf '      - "%s:%s:%s"\n' "$bind_ip" "$port_spec" "$port_spec"
+      done <"$BOTSHEPHERD_PORTS_STATE"
+    } >"$temporary"
+  else
+    {
+      printf 'services:\n'
+      printf '  botshepherd: {}\n'
+    } >"$temporary"
+  fi
+
+  mv -f "$temporary" "$BOTSHEPHERD_PORTS_OVERRIDE"
+  chmod 600 "$BOTSHEPHERD_PORTS_OVERRIDE"
+}
+
+show_botshepherd_port_mappings() {
+  local index=0
+  local bind_ip port_spec
+
+  printf '\n当前由安装器管理的 BotShepherd 端口映射：\n'
+  if [[ ! -s "$BOTSHEPHERD_PORTS_STATE" ]]; then
+    printf '  （无）\n'
+    return
+  fi
+
+  while IFS='|' read -r bind_ip port_spec; do
+    [[ -n "$bind_ip" && -n "$port_spec" ]] || continue
+    index=$((index + 1))
+    printf '  %d) %s:%s -> botshepherd:%s\n' \
+      "$index" "$bind_ip" "$port_spec" "$port_spec"
+  done <"$BOTSHEPHERD_PORTS_STATE"
+}
+
+apply_botshepherd_port_mappings() {
+  local compose=(
+    "$DOCKER_BIN" compose
+    --project-directory "$SCRIPT_DIR"
+    --env-file "$MANAGED_ENV_FILE"
+    -p nag
+    -f "${SCRIPT_DIR}/docker-compose.yml"
+    -f "${SCRIPT_DIR}/docker-compose.botshepherd.yml"
+    -f "$BOTSHEPHERD_PORTS_OVERRIDE"
+  )
+
+  write_botshepherd_ports_override
+  "${compose[@]}" config --quiet
+  log "recreating only nag-botshepherd to apply port mappings"
+  "${compose[@]}" up -d --no-deps --force-recreate botshepherd
+}
+
+add_botshepherd_port_mapping() {
+  local bind_ip port_spec
+  local selected_start
+  local existing_bind existing_spec
+  local reserved_name reserved_port
+  local reserved_ports=()
+
+  read -r -p "宿主机监听地址 [127.0.0.1]: " bind_ip
+  bind_ip="${bind_ip:-127.0.0.1}"
+  case "$bind_ip" in
+    127.0.0.1|0.0.0.0) ;;
+    *) die "binding address must be 127.0.0.1 or 0.0.0.0" ;;
+  esac
+  if [[ "$bind_ip" == "0.0.0.0" ]]; then
+    warn "此映射将监听所有网络接口；请同时配置防火墙或安全组"
+  fi
+
+  while true; do
+    read -r -p "端口或端口范围（例如 2537 或 2537-2547）: " port_spec
+    if parse_port_range "$port_spec"; then
+      selected_start="$RANGE_START"
+      break
+    fi
+    warn "请输入有效端口或端口范围"
+  done
+
+  reserved_ports+=(
+    "GsCore|$(env_value GSCORE_PORT "$MANAGED_ENV_FILE")"
+    "AstrBot|$(env_value ASTRBOT_WEBUI_PORT "$MANAGED_ENV_FILE")"
+    "NapCat|$(env_value NAPCAT_WEBUI_PORT "$MANAGED_ENV_FILE")"
+    "BotShepherd WebUI|$(env_value BOTSHEPHERD_WEBUI_PORT "$MANAGED_ENV_FILE")"
+  )
+  for reserved_name in "${reserved_ports[@]}"; do
+    reserved_port="${reserved_name#*|}"
+    reserved_name="${reserved_name%%|*}"
+    [[ -n "$reserved_port" ]] || continue
+    if port_ranges_overlap "$port_spec" "$reserved_port"; then
+      die "$port_spec conflicts with the ${reserved_name} host port ${reserved_port}"
+    fi
+  done
+
+  if [[ -s "$BOTSHEPHERD_PORTS_STATE" ]]; then
+    while IFS='|' read -r existing_bind existing_spec; do
+      [[ -n "$existing_spec" ]] || continue
+      if port_ranges_overlap "$port_spec" "$existing_spec"; then
+        die "$port_spec overlaps an existing managed mapping: ${existing_bind}:${existing_spec}"
+      fi
+    done <"$BOTSHEPHERD_PORTS_STATE"
+  fi
+
+  printf '%s|%s\n' "$bind_ip" "$port_spec" >>"$BOTSHEPHERD_PORTS_STATE"
+  sort -u -o "$BOTSHEPHERD_PORTS_STATE" "$BOTSHEPHERD_PORTS_STATE"
+  chmod 600 "$BOTSHEPHERD_PORTS_STATE"
+  apply_botshepherd_port_mappings
+
+  cat <<EOF
+
+映射已建立：${bind_ip}:${port_spec} -> botshepherd:${port_spec}
+
+请在 BotShepherd WebUI 中为每个实际使用的端口创建独立连接配置，例如：
+  客户端端点：ws://0.0.0.0:${selected_start}/OneBotv11
+
+如果下游 NoneBot 运行在同一宿主机，请把目标端点填写为：
+  ws://host.docker.internal:<NoneBot端口>/<WebSocket路径>
+EOF
+}
+
+remove_botshepherd_port_mapping() {
+  local mappings=()
+  local selection
+  local temporary="${BOTSHEPHERD_PORTS_STATE}.tmp"
+
+  [[ -s "$BOTSHEPHERD_PORTS_STATE" ]] || {
+    warn "当前没有由安装器管理的端口映射"
+    return
+  }
+
+  mapfile -t mappings <"$BOTSHEPHERD_PORTS_STATE"
+  show_botshepherd_port_mappings
+  while true; do
+    read -r -p "请输入要删除的序号: " selection
+    if [[ "$selection" =~ ^[0-9]+$ ]] \
+      && ((10#$selection >= 1 && 10#$selection <= ${#mappings[@]})); then
+      break
+    fi
+    warn "请输入有效序号"
+  done
+
+  : >"$temporary"
+  for ((index = 0; index < ${#mappings[@]}; index++)); do
+    ((index == 10#$selection - 1)) || printf '%s\n' "${mappings[$index]}" >>"$temporary"
+  done
+  mv -f "$temporary" "$BOTSHEPHERD_PORTS_STATE"
+  chmod 600 "$BOTSHEPHERD_PORTS_STATE"
+  apply_botshepherd_port_mappings
+  log "port mapping removed"
+}
+
+manage_botshepherd_ports() {
+  local action
+
+  [[ -t 0 ]] || die "BotShepherd port management requires an interactive terminal"
+  (( ! DRY_RUN )) || die "--dry-run is not supported with botshepherd-ports mode"
+  command -v "$DOCKER_BIN" >/dev/null 2>&1 || die "Docker is not installed"
+  "$DOCKER_BIN" compose version >/dev/null 2>&1 || die "Docker Compose V2 is required"
+  "$DOCKER_BIN" info >/dev/null 2>&1 || die "cannot access the Docker daemon"
+  "$DOCKER_BIN" inspect nag-botshepherd >/dev/null 2>&1 || \
+    die "nag-botshepherd does not exist; first install route 1 or 2 with BotShepherd enabled"
+
+  choose_botshepherd_env_file
+  BOTSHEPHERD_PORTS_STATE="${STATE_DIR}/botshepherd-ports.list"
+  BOTSHEPHERD_PORTS_OVERRIDE="${STATE_DIR}/docker-compose.botshepherd-ports.yml"
+  mkdir -p "$STATE_DIR"
+  touch "$BOTSHEPHERD_PORTS_STATE"
+  chmod 600 "$BOTSHEPHERD_PORTS_STATE"
+
+  while true; do
+    show_botshepherd_port_mappings
+    cat <<'EOF'
+
+请选择操作：
+  1) 新增端口或端口范围
+  2) 删除端口映射
+  3) 重新应用当前映射
+  4) 退出
+EOF
+    read -r -p "请输入 1、2、3 或 4: " action
+    case "$action" in
+      1) add_botshepherd_port_mapping ;;
+      2) remove_botshepherd_port_mapping ;;
+      3) apply_botshepherd_port_mappings ;;
+      4) return ;;
+      *) warn "请输入有效选项" ;;
+    esac
+  done
+}
+
 choose_mode
+
+if [[ "$MODE" == "botshepherd-ports" ]]; then
+  manage_botshepherd_ports
+  exit 0
+fi
 
 case "$MODE" in
   astrbot)
@@ -244,6 +518,9 @@ if ((USE_BOTSHEPHERD)); then
   MODE_LABEL="${MODE_LABEL/NapCat + AstrBot/NapCat + BotShepherd + AstrBot}"
   ENV_FILE="${STATE_DIR}/${MODE}-botshepherd.env"
   COMPOSE_FILES+=("${SCRIPT_DIR}/docker-compose.botshepherd.yml")
+  if [[ -f "${STATE_DIR}/docker-compose.botshepherd-ports.yml" ]]; then
+    COMPOSE_FILES+=("${STATE_DIR}/docker-compose.botshepherd-ports.yml")
+  fi
 fi
 
 NAPCAT_MASTER_QQ="$(env_default NAPCAT_MASTER_QQ "")"
