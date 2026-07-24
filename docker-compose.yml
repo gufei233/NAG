@@ -125,6 +125,8 @@ services:
       NAPCAT_MASTER_QQ: ${NAPCAT_MASTER_QQ:-}
       NAPCAT_UID: ${NAPCAT_UID:-1000}
       NAPCAT_GID: ${NAPCAT_GID:-1000}
+      NAPCAT_ONEBOT_WS_URL: ${NAPCAT_ONEBOT_WS_URL:-ws://astrbot:6199/ws}
+      NAPCAT_ONEBOT_WS_NAME: ${NAPCAT_ONEBOT_WS_NAME:-AstrBot}
     entrypoint:
       - /bin/sh
       - -lc
@@ -143,6 +145,8 @@ services:
                 if account.strip()
             )
         )
+        onebot_ws_url = os.environ["NAPCAT_ONEBOT_WS_URL"]
+        onebot_ws_name = os.environ["NAPCAT_ONEBOT_WS_NAME"]
 
         def load_json(path):
             return json.loads(path.read_text(encoding="utf-8-sig"))
@@ -209,8 +213,13 @@ services:
                 (
                     item
                     for item in clients
-                    if item.get("url") == "ws://astrbot:6199/ws"
-                    or item.get("name") in {"rws", "AstrBot"}
+                    if item.get("url")
+                    in {
+                        "ws://astrbot:6199/ws",
+                        "ws://botshepherd:2537/OneBotv11",
+                        onebot_ws_url,
+                    }
+                    or item.get("name") in {"rws", "AstrBot", "BotShepherd", onebot_ws_name}
                 ),
                 None,
             )
@@ -220,8 +229,8 @@ services:
             client.update(
                 {
                     "enable": True,
-                    "name": "AstrBot",
-                    "url": "ws://astrbot:6199/ws",
+                    "name": onebot_ws_name,
+                    "url": onebot_ws_url,
                     "reportSelfMessage": False,
                     "messagePostFormat": "array",
                     "token": "",
@@ -235,7 +244,8 @@ services:
         print(
             f"Configured {len(admins_id)} AstrBot administrator(s), "
             "OneBot v11 on 0.0.0.0:6199, and "
-            f"{len(napcat_paths)} NapCat WebSocket client config(s)."
+            f"{len(napcat_paths)} NapCat WebSocket client config(s) "
+            f"for {onebot_ws_url}."
         )
         PY
     volumes:

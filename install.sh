@@ -9,6 +9,7 @@ readonly STATE_DIR="${NAG_INSTALL_STATE_DIR:-${SCRIPT_DIR}/.installer}"
 readonly DOCKER_BIN="${NAG_DOCKER_BIN:-docker}"
 readonly NAPCAT_COMPAT_IMAGE="mlikiowa/napcat-docker:v4.18.5"
 readonly NAPCAT_ADAPTER_LATEST_URL="https://github.com/xiowo/napcat-plugin-gscore-adapter/releases/latest/download/napcat-plugin-gscore-adapter.zip"
+readonly BOTSHEPHERD_IMAGE_DEFAULT="ghcr.io/gufei233/botshepherd:v1.2.1-docker.1"
 
 MODE=""
 ASSUME_YES=0
@@ -17,6 +18,7 @@ INSTALL_WUWA=1
 INSTALL_WUWA_DEPS=1
 FIXED_MAC=1
 USE_CNB_MIRRORS=0
+USE_BOTSHEPHERD=0
 NAPCAT_MASTER_QQ_OVERRIDE=""
 
 log() {
@@ -43,6 +45,9 @@ Options:
                   astrbot         NapCat + AstrBot + GsCore, AstrBot adapter
                   hybrid          NapCat + AstrBot + GsCore, NapCat adapter
                   napcat          NapCat + GsCore, NapCat adapter
+  --botshepherd
+                Add BotShepherd between NapCat and AstrBot in astrbot or
+                hybrid mode
   --yes         Accept the recommended answers for optional questions
   --master-qq QQ
                 Master QQ for GsCore and the NapCat GScore adapter. Separate
@@ -70,6 +75,10 @@ while (($# > 0)); do
       (($# >= 2)) || die "--master-qq requires a value"
       NAPCAT_MASTER_QQ_OVERRIDE="$2"
       shift 2
+      ;;
+    --botshepherd)
+      USE_BOTSHEPHERD=1
+      shift
       ;;
     --dry-run)
       DRY_RUN=1
@@ -223,6 +232,20 @@ case "$MODE" in
     ;;
 esac
 
+if [[ "$MODE" == "napcat" ]]; then
+  (( ! USE_BOTSHEPHERD )) || die "--botshepherd is only available in astrbot or hybrid mode"
+elif (( ! USE_BOTSHEPHERD && ! ASSUME_YES )); then
+  if prompt_yes_no "是否在 NapCat 与 AstrBot 之间加入 BotShepherd" n; then
+    USE_BOTSHEPHERD=1
+  fi
+fi
+
+if ((USE_BOTSHEPHERD)); then
+  MODE_LABEL="${MODE_LABEL/NapCat + AstrBot/NapCat + BotShepherd + AstrBot}"
+  ENV_FILE="${STATE_DIR}/${MODE}-botshepherd.env"
+  COMPOSE_FILES+=("${SCRIPT_DIR}/docker-compose.botshepherd.yml")
+fi
+
 NAPCAT_MASTER_QQ="$(env_default NAPCAT_MASTER_QQ "")"
 if [[ -n "$NAPCAT_MASTER_QQ_OVERRIDE" ]]; then
   NAPCAT_MASTER_QQ="$NAPCAT_MASTER_QQ_OVERRIDE"
@@ -245,8 +268,12 @@ BIND_IP="$(prompt_value "WebUI 绑定地址" "$(env_default BIND_IP "127.0.0.1")
 GSCORE_PORT="$(prompt_value "GsCore WebUI 端口" "$(env_default GSCORE_PORT "8765")")"
 NAPCAT_WEBUI_PORT="$(prompt_value "NapCat WebUI 端口" "$(env_default NAPCAT_WEBUI_PORT "6099")")"
 ASTRBOT_WEBUI_PORT="$(env_default ASTRBOT_WEBUI_PORT "6185")"
+BOTSHEPHERD_WEBUI_PORT="$(env_default BOTSHEPHERD_WEBUI_PORT "5111")"
 if [[ "$MODE" != "napcat" ]]; then
   ASTRBOT_WEBUI_PORT="$(prompt_value "AstrBot WebUI 端口" "$ASTRBOT_WEBUI_PORT")"
+fi
+if ((USE_BOTSHEPHERD)); then
+  BOTSHEPHERD_WEBUI_PORT="$(prompt_value "BotShepherd WebUI 端口" "$BOTSHEPHERD_WEBUI_PORT")"
 fi
 
 [[ "$DATA_ROOT" == /* ]] || die "DATA_ROOT must be an absolute path"
@@ -259,9 +286,18 @@ validate_port NAPCAT_WEBUI_PORT "$NAPCAT_WEBUI_PORT"
 if [[ "$MODE" != "napcat" ]]; then
   validate_port ASTRBOT_WEBUI_PORT "$ASTRBOT_WEBUI_PORT"
 fi
+if ((USE_BOTSHEPHERD)); then
+  validate_port BOTSHEPHERD_WEBUI_PORT "$BOTSHEPHERD_WEBUI_PORT"
+fi
 [[ "$GSCORE_PORT" != "$NAPCAT_WEBUI_PORT" ]] || die "GsCore and NapCat ports must differ"
 if [[ "$MODE" != "napcat" ]]; then
   [[ "$GSCORE_PORT" != "$ASTRBOT_WEBUI_PORT" && "$NAPCAT_WEBUI_PORT" != "$ASTRBOT_WEBUI_PORT" ]] || \
+    die "all WebUI ports must differ"
+fi
+if ((USE_BOTSHEPHERD)); then
+  [[ "$BOTSHEPHERD_WEBUI_PORT" != "$GSCORE_PORT" \
+    && "$BOTSHEPHERD_WEBUI_PORT" != "$NAPCAT_WEBUI_PORT" \
+    && "$BOTSHEPHERD_WEBUI_PORT" != "$ASTRBOT_WEBUI_PORT" ]] || \
     die "all WebUI ports must differ"
 fi
 
@@ -316,6 +352,7 @@ fi
 for pair in \
   "DATA_ROOT=$DATA_ROOT" "BIND_IP=$BIND_IP" \
   "GSCORE_PORT=$GSCORE_PORT" "ASTRBOT_WEBUI_PORT=$ASTRBOT_WEBUI_PORT" \
+  "BOTSHEPHERD_WEBUI_PORT=$BOTSHEPHERD_WEBUI_PORT" \
   "NAPCAT_WEBUI_PORT=$NAPCAT_WEBUI_PORT" "NAPCAT_ADAPTER_URL=$NAPCAT_ADAPTER_URL" \
   "GSCORE_WS_TOKEN=$GSCORE_WS_TOKEN" "NAPCAT_MASTER_QQ=$NAPCAT_MASTER_QQ"; do
   validate_single_line "${pair%%=*}" "${pair#*=}"
@@ -338,7 +375,12 @@ NapCat 端口：$NAPCAT_WEBUI_PORT
 EOF
   if [[ "$MODE" != "napcat" ]]; then
     printf 'AstrBot 端口：%s\n' "$ASTRBOT_WEBUI_PORT"
-    printf 'OneBot 连接：自动配置 NapCat -> ws://astrbot:6199/ws\n'
+    if ((USE_BOTSHEPHERD)); then
+      printf 'BotShepherd 端口：%s\n' "$BOTSHEPHERD_WEBUI_PORT"
+      printf 'OneBot 连接：自动配置 NapCat -> BotShepherd -> AstrBot\n'
+    else
+      printf 'OneBot 连接：自动配置 NapCat -> ws://astrbot:6199/ws\n'
+    fi
   fi
   printf 'NapCat 镜像：%s\n' "$NAPCAT_IMAGE"
   printf 'GsCore 主人列表：%s（自动配置）\n' "$NAPCAT_MASTER_QQ"
@@ -375,6 +417,12 @@ case "$(uname -m)" in
   x86_64|amd64|aarch64|arm64) ;;
   *) warn "the current architecture ($(uname -m)) is not listed by the NapCat Docker image" ;;
 esac
+if ((USE_BOTSHEPHERD)); then
+  case "$(uname -m)" in
+    x86_64|amd64) ;;
+    *) die "the published BotShepherd image currently supports linux/amd64 only" ;;
+  esac
+fi
 
 mkdir -p "$STATE_DIR"
 tmp_env="${ENV_FILE}.tmp"
@@ -385,6 +433,7 @@ BIND_IP=$BIND_IP
 TZ=Asia/Shanghai
 GSCORE_PORT=$GSCORE_PORT
 ASTRBOT_WEBUI_PORT=$ASTRBOT_WEBUI_PORT
+BOTSHEPHERD_WEBUI_PORT=$BOTSHEPHERD_WEBUI_PORT
 NAPCAT_WEBUI_PORT=$NAPCAT_WEBUI_PORT
 NAPCAT_UID=$NAPCAT_UID
 NAPCAT_GID=$NAPCAT_GID
@@ -392,6 +441,7 @@ NAPCAT_MAC=$NAPCAT_MAC
 NAPCAT_MASTER_QQ=$NAPCAT_MASTER_QQ
 GSCORE_IMAGE=docker.cnb.cool/gscore-mirror/gsuid_core:latest
 ASTRBOT_IMAGE=soulter/astrbot:latest
+BOTSHEPHERD_IMAGE=$BOTSHEPHERD_IMAGE_DEFAULT
 NAPCAT_IMAGE=$NAPCAT_IMAGE
 NAPCAT_GSCORE_ADAPTER_ZIP_URL=$NAPCAT_ADAPTER_URL
 ASTRBOT_GSCORE_ADAPTER_REPO=https://github.com/KimigaiiWuyi/astrbot_plugin_gscore_adapter.git
@@ -417,6 +467,13 @@ DATA_DIRS=(
 if [[ "$MODE" != "napcat" ]]; then
   DATA_DIRS+=("$DATA_ROOT/astrbot")
 fi
+if ((USE_BOTSHEPHERD)); then
+  DATA_DIRS+=(
+    "$DATA_ROOT/botshepherd/config"
+    "$DATA_ROOT/botshepherd/data"
+    "$DATA_ROOT/botshepherd/logs"
+  )
+fi
 
 if ! mkdir -p "${DATA_DIRS[@]}" 2>/dev/null; then
   command -v sudo >/dev/null 2>&1 || die "cannot create $DATA_ROOT and sudo is unavailable"
@@ -428,7 +485,8 @@ for data_dir in "${DATA_DIRS[@]}"; do
   [[ -w "$data_dir" ]] || die "$data_dir is not writable by UID $NAPCAT_UID; fix its ownership or permissions"
 done
 
-if [[ "$MODE" == "hybrid" && -e "$DATA_ROOT/astrbot/plugins/astrbot_plugin_gscore_adapter" ]]; then
+if [[ "$ADAPTER_KIND" == "napcat" && "$MODE" != "napcat" \
+  && -e "$DATA_ROOT/astrbot/plugins/astrbot_plugin_gscore_adapter" ]]; then
   warn "AstrBot GScore adapter already exists in persistent data. Disable it before using the NapCat adapter to avoid duplicate handling."
 fi
 
@@ -539,6 +597,49 @@ wait_astrbot_onebot_listener() {
   die "AstrBot OneBot v11 listener did not become ready on port 6199 within 120 seconds"
 }
 
+wait_botshepherd_ready() {
+  local attempt
+
+  log "waiting for BotShepherd WebUI and OneBot listener"
+  for ((attempt = 1; attempt <= 60; attempt++)); do
+    if compose exec -T botshepherd python -c '
+from urllib.request import urlopen
+import socket
+
+response = urlopen("http://127.0.0.1:5111/login", timeout=3)
+assert response.status == 200
+connection = socket.create_connection(("127.0.0.1", 2537), timeout=3)
+connection.close()
+' >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+
+  compose logs --tail=100 botshepherd || true
+  die "BotShepherd did not become ready within 120 seconds"
+}
+
+wait_botshepherd_initial_password() {
+  local attempt
+  local password=""
+
+  for ((attempt = 1; attempt <= 60; attempt++)); do
+    password="$(
+      compose logs --no-color botshepherd 2>/dev/null \
+        | sed -n 's/.*BotShepherd generated initial password:[[:space:]]*\([[:graph:]][[:graph:]]*\).*/\1/p' \
+        | tail -n 1 || true
+    )"
+    if [[ -n "$password" ]]; then
+      printf '%s' "$password"
+      return 0
+    fi
+    sleep 2
+  done
+
+  return 1
+}
+
 read_gscore_register_code() {
   compose exec -T gscore /venv/bin/python -c '
 import json
@@ -633,10 +734,19 @@ wait_gscore_ready "after installing plugins and dependencies"
 if [[ "$MODE" != "napcat" ]]; then
   wait_astrbot_config
   log "configuring the AstrBot OneBot v11 platform and NapCat reverse WebSocket client"
-  compose stop napcat astrbot
+  if ((USE_BOTSHEPHERD)); then
+    compose stop napcat botshepherd astrbot
+  else
+    compose stop napcat astrbot
+  fi
   compose --profile init run --rm astrbot-onebot-init
-  compose up -d astrbot napcat
+  compose up -d astrbot
   wait_astrbot_onebot_listener
+  if ((USE_BOTSHEPHERD)); then
+    compose up -d botshepherd
+    wait_botshepherd_ready
+  fi
+  compose up -d napcat
 fi
 
 GSCORE_REGISTER_CODE=""
@@ -656,6 +766,14 @@ if [[ "$MODE" != "napcat" ]]; then
   log "waiting for the AstrBot initial WebUI password"
   if ! ASTRBOT_INITIAL_PASSWORD="$(wait_astrbot_initial_password)"; then
     warn "AstrBot started, but no initial WebUI password was found in its current logs; this is expected when reusing existing AstrBot data"
+  fi
+fi
+
+BOTSHEPHERD_INITIAL_PASSWORD=""
+if ((USE_BOTSHEPHERD)); then
+  log "waiting for the BotShepherd initial WebUI password"
+  if ! BOTSHEPHERD_INITIAL_PASSWORD="$(wait_botshepherd_initial_password)"; then
+    warn "BotShepherd started, but no initial WebUI password was found in its current logs; this is expected when reusing existing BotShepherd data"
   fi
 fi
 compose ps
@@ -683,6 +801,15 @@ if [[ "$MODE" != "napcat" ]]; then
     printf '  AstrBot 初始密码: 未从本次启动日志中读取到\n'
   fi
 fi
+if ((USE_BOTSHEPHERD)); then
+  printf '  BotShepherd: http://%s:%s\n' "$BIND_IP" "$BOTSHEPHERD_WEBUI_PORT"
+  printf '  BotShepherd 用户名: admin\n'
+  if [[ -n "$BOTSHEPHERD_INITIAL_PASSWORD" ]]; then
+    printf '  BotShepherd 初始密码: %s\n' "$BOTSHEPHERD_INITIAL_PASSWORD"
+  else
+    printf '  BotShepherd 初始密码: 未从本次启动日志中读取到\n'
+  fi
+fi
 
 cat <<EOF
 
@@ -691,15 +818,31 @@ cat <<EOF
   2. 使用上方注册码在 GsCore WebUI 完成首次注册；主人账号列表和 WS_TOKEN 已自动配置。
 EOF
 if [[ "$ADAPTER_KIND" == "astrbot" ]]; then
-  cat <<'EOF'
+  if ((USE_BOTSHEPHERD)); then
+    cat <<'EOF'
+  3. AstrBot 的 aiocqhttp/OneBot 平台及 NapCat 反向 WebSocket 已自动配置为 NapCat -> BotShepherd -> AstrBot；扫码登录 QQ 后会自动建立连接。GScore 适配器已预配置为 gscore:8765 和共享 WS_TOKEN。
+  4. BotShepherd 已创建默认连接并将主人 QQ 写入超级用户；登录 WebUI 后可配置黑名单、指令过滤和更多下游框架。
+  5. 如手动修改 WS_TOKEN，请保持 GsCore 与 AstrBot GScore 适配器中的值一致。
+EOF
+  else
+    cat <<'EOF'
   3. AstrBot 的 aiocqhttp/OneBot 平台及 NapCat 反向 WebSocket 已自动配置；扫码登录 QQ 后会自动建立连接。GScore 适配器已预配置为 gscore:8765 和共享 WS_TOKEN。
   4. 如手动修改 WS_TOKEN，请保持 GsCore 与 AstrBot GScore 适配器中的值一致。
 EOF
-elif [[ "$MODE" == "hybrid" ]]; then
-  cat <<'EOF'
+  fi
+elif [[ "$MODE" != "napcat" ]]; then
+  if ((USE_BOTSHEPHERD)); then
+    cat <<'EOF'
+  3. NapCat GScore 适配器已自动启用，并已配置连接地址、WS_TOKEN 和主人 QQ。
+  4. AstrBot 的 aiocqhttp/OneBot 平台及 NapCat 反向 WebSocket 已自动配置为 NapCat -> BotShepherd -> AstrBot；扫码登录 QQ 后会自动建立连接。
+  5. BotShepherd 已创建默认连接并将主人 QQ 写入超级用户；请让 AstrBot 的 LLM 忽略 GScore 指令前缀，避免重复回复。
+EOF
+  else
+    cat <<'EOF'
   3. NapCat GScore 适配器已自动启用，并已配置连接地址、WS_TOKEN 和主人 QQ。
   4. AstrBot 的 aiocqhttp/OneBot 平台及 NapCat 反向 WebSocket 已自动配置，扫码登录 QQ 后会自动建立连接；请让 LLM 忽略 GScore 指令前缀，避免重复回复。
 EOF
+  fi
 else
   cat <<'EOF'
   3. NapCat GScore 适配器已自动启用，并已配置连接地址、WS_TOKEN 和主人 QQ。
