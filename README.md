@@ -1,29 +1,77 @@
 # NAG
 
-NapCat + AstrBot + GsCore 的 Docker Compose 部署模板。
+个人 QQ / QQ 官方机器人 + AstrBot / NoneBot / GsCore 的 Docker Compose 部署模板。
 
-## 三条部署路线
+## 快速导航
 
-本仓库在同一个 `main` 分支内提供三条路线：
+- [部署选择](#部署选择)：先确定个人 QQ、QQ 官方机器人或双通道方案
+- [安装 Docker](#安装-docker)：准备 Ubuntu / Debian 服务器环境
+- [交互式一键脚本](#方式一交互式一键脚本推荐)：推荐的新装、增量调整和修复方式
+- [传统手动 Docker Compose 部署](#方式二传统手动-docker-compose-部署)：七条固定路线
+- [首次配置顺序](#首次配置顺序)：登录 WebUI 并完成联调
+- [常用运维命令](#常用运维命令)：更新、备份和停止
+- [常见问题](#常见问题)：WebUI、密码和连接故障
 
-1. **AstrBot 适配器**：`GsCore <-> AstrBot GScore 适配器 <-> AstrBot <-> NapCatQQ`。适合需要 AstrBot 的 LLM、WebUI 管理和多平台能力，并愿意自行调试适配器的用户。
-2. **NapCat 适配器 + AstrBot**：`GsCore <-> NapCat GScore 适配器 <-> NapCatQQ`，同时保留 AstrBot，并通过 OneBot 连接 NapCat。适合希望由 NapCat 直接处理 GScore 指令、同时继续使用 AstrBot 的用户。
-3. **NapCat 适配器轻量版（NG，推荐）**：`GsCore <-> NapCat GScore 适配器 <-> NapCatQQ`，不安装 AstrBot。适合只需要 QQ 和 GsCore 的用户，详见 [NG 说明](NG/README.md)。
+## 部署选择
 
-选择路线 1 或路线 2 时，安装脚本还会询问是否加入 **BotShepherd**。启用后，OneBot 链路会变为 `NapCatQQ <-> BotShepherd <-> AstrBot`；GsCore 适配器归属仍由所选路线决定。BotShepherd 用于统一连接管理、黑名单、指令过滤、别名和消息统计，不会代替 AstrBot 或 GsCore。
+一键脚本将部署归纳为三套大方案，并使用终端流程图标出固定项、可自定义项和可选组件：
 
-目前 AstrBot 的 GScore 适配器完成度相对较低，建议优先选择路线 2 或路线 3；如果不需要 AstrBot 的其他功能，推荐使用路线 3（NG 轻量版）。
+| 大方案 | 固定入口 | GScore 处理方（单选） | 可选组件 | 适合场景 |
+| --- | --- | --- | --- | --- |
+| 个人 QQ | NapCatQQ | NapCat、NoneBot 或 AstrBot | AstrBot、NoneBot、BotShepherd | 功能最完整，适合个人 QQ |
+| QQ 官方机器人 | QQ Gateway，不安装 NapCat | gscore-qqofficial 或 NoneBot | — | 使用 QQ 开放平台机器人 |
+| 双通道 | 同时启用以上两个入口 | 两条链路分别选择 | 继承个人 QQ 可选组件 | 同时服务个人 QQ 和官方机器人 |
 
-路线 2 和路线 3 会固定使用 `mlikiowa/napcat-docker:v4.18.5`，避免 NapCat v4.18.6 起的官方插件白名单影响 GScore 适配器。三条路线的默认端口和容器名存在冲突，不能在同一台主机上以默认配置同时运行。
+```text
+1) 个人 QQ 方案
+   个人 QQ
+      └─ [固定] NapCat
+            ├─ [可自定义] GScore 处理方 ──> [共享] GsCore
+            └─ [可选] AstrBot / NoneBot / BotShepherd
 
-本仓库面向个人 QQ。使用 QQ 官方机器人或强依赖 NoneBot2 插件生态时，请参考相应项目的完整教程；本仓库不包含 NoneBot2。
+2) QQ 官方机器人方案
+   QQ Gateway
+      └─ [可自定义] 官方适配器 ───────────> [共享] GsCore
+         [固定] 不安装 NapCat
+
+3) 双通道方案
+   同时启用方案 1 和方案 2，两条链路共用同一个 GsCore
+
+图例：
+  [固定] 始终存在  [可自定义] 可在方案内切换
+  [可选] 可随时增删  [共享] 两条链路复用同一服务和数据
+```
+
+个人 QQ 的 GScore 处理方只能选择一个：
+
+- **NapCat GScore 插件（推荐）**：可再选择是否安装 AstrBot、NoneBot，二者也可以同时安装。此时 AstrBot/NoneBot 只处理各自的普通插件消息。
+- **NoneBot GenshinUID**：NoneBot 必装，可再加装 AstrBot。
+- **AstrBot GScore 适配器**：AstrBot 必装，可再加装 NoneBot。该适配器完成度相对较低，建议仅在确有需要时选择。
+
+QQ 官方机器人的 GScore 处理方也只能选择一个：
+
+- **gscore-qqofficial 轻量直连（推荐）**：组件最少，只需要 AppID 和 AppSecret。
+- **NoneBot + nonebot-adapter-qq**：适合还需要 NoneBot 插件生态的用户，需要 AppID、Token 和 AppSecret。
+
+当个人 QQ 安装 AstrBot 或 NoneBot 时，还可选择加入 **BotShepherd**。启用后，OneBot 链路会变为 `NapCatQQ <-> BotShepherd <-> AstrBot/NoneBot`；AstrBot 与 NoneBot 同时安装时，BotShepherd 会把消息转发给两者。它用于统一连接管理、黑名单、指令过滤、别名和消息统计，不会代替下游框架或 GsCore。
+
+只要个人 QQ 选择 NapCat GScore 插件，脚本就会固定使用 `mlikiowa/napcat-docker:v4.18.5`，避免 NapCat v4.18.6 起的官方插件白名单影响第三方插件。其他个人 QQ 组合可使用当前 NapCat 镜像。
+
+QQ 官方机器人的管理员标识是 OpenID，不是数字 QQ 号。脚本不会从日志自动收集或填入 OpenID；首次可留空，取得自己的 OpenID 后再手动填写。两种官方接入启动前都要把服务器公网 IP 加入 QQ 开放平台的机器人 IP 白名单，否则脚本会报告 `11298`。
+
+> [!IMPORTANT]
+> 个人 QQ 使用 NapCat GScore 插件时，NapCat 会自动固定为 `v4.18.5`。AstrBot GScore 适配器完成度相对较低；没有明确需求时，优先选择 NapCat 或 NoneBot 处理 GScore。
+
+原来的七条固定路线仍作为 `--mode` 预设和手动 Compose 示例保留，便于自动化部署和已有用户继续使用。
 
 ## 组件
 
 - **GsCore / GenshinUID Core**：游戏数据查询、面板渲染、签到、插件管理等核心能力。
 - **AstrBot**：机器人中控与 WebUI，负责接入 NapCat，并通过插件转发 GsCore 指令。
+- **NoneBot2**：可选机器人框架，通过 OneBot V11 接入 NapCat，并按路线选择是否加载 GenshinUID。
 - **NapCatQQ**：QQ 协议端，负责登录 QQ 并提供 OneBot V11 通信。
-- **BotShepherd（可选）**：位于 NapCat 与 AstrBot 之间的 OneBot V11 代理和管理层。
+- **BotShepherd（可选）**：位于 NapCat 与 AstrBot/NoneBot 之间的 OneBot V11 代理和管理层。
+- **nonebot-adapter-qq / gscore-qqofficial**：两种不依赖 NapCat 的 QQ 官方机器人接入方式。
 
 ## 安装 Docker
 
@@ -95,9 +143,11 @@ newgrp docker
 
 ## 两种使用方式
 
-三条路线都可以通过交互式一键脚本安装，也可以使用 Docker Compose 手动部署。一键脚本适合首次使用；手动部署适合希望自行维护 `.env`、Compose 参数和初始化顺序的用户。
+所有组合都可以通过交互式一键脚本安装。原来的七条固定路线仍可通过 `--mode` 或 Docker Compose 手动部署；一键脚本适合首次使用，手动部署适合希望自行维护 `.env`、Compose 参数和初始化顺序的用户。
 
 ### 方式一：交互式一键脚本（推荐）
+
+首次安装：
 
 ```bash
 git clone https://github.com/gufei233/NAG.git
@@ -105,26 +155,86 @@ cd NAG
 bash install.sh
 ```
 
-脚本会让用户选择三条路线之一；选择路线 1 或路线 2 后，还会询问是否加入 BotShepherd。它会自动创建持久化目录、配置 GsCore 主人列表、AstrBot 管理员 ID、适配器连接地址和共享 `WS_TOKEN`，还可固定 NapCat MAC、克隆鸣潮插件套件并安装 Playwright、OpenCV、字体、拼音和 Chromium 等额外依赖。
+首次运行时，脚本先显示三套大方案的流程图，再选择唯一的 GScore 处理方和可选框架。AstrBot 与 NoneBot 可以同时安装，两种 QQ 接入也会自动共用一套 GsCore。脚本会自动：
 
-安装完成后，脚本会打印 GsCore 首次注册所需的 `REGISTER_CODE`、NapCat WebUI Token，以及路线 1/2 中 AstrBot 首次启动时随机生成的 WebUI 初始密码。启用 BotShepherd 时，也会打印它的随机初始密码。脚本不会代替用户登录 QQ 或完成 GsCore WebUI 的首次注册。
+- 创建持久化目录并生成私有配置；
+- 配置 GsCore 主人、框架管理员和共享 `WS_TOKEN`；
+- 创建 NapCat、AstrBot、NoneBot、BotShepherd 之间的连接；
+- 复用 NapCat MAC 与快速登录账号，降低容器重建后重新登录的概率；
+- 按需克隆鸣潮插件套件，安装 Playwright、OpenCV、字体、拼音和 Chromium 等依赖。
 
-BotShepherd 安装完成后，可再次运行 `bash install.sh` 并选择选项 4，快捷查看、新增、删除或重新应用 BotShepherd 的宿主机端口映射。该操作只重建 `nag-botshepherd`，不会重建其他三个服务。
+更新仓库或调整现有部署：
 
-无人值守地采用推荐值，或仅查看执行计划：
+```bash
+cd NAG
+git pull --ff-only
+bash install.sh
+```
+
+再次运行时，脚本读取 `.installer/guided.state` 并提供三种操作：
+
+1. **在当前大方案内自定义组件**：增删 AstrBot、NoneBot、BotShepherd，或切换 GScore 处理方；
+2. **修复或更新当前方案**：重新校验镜像、配置和连接；
+3. **更换大方案**：在个人 QQ、QQ 官方机器人和双通道之间切换。
+
+执行前会列出新增、停止、切换、重建、重启和保持不变的项目。未列出的组件不会重建；退出当前拓扑的容器只会停止，持久化数据、私有凭据和 NapCat 身份默认保留。切换离开 AstrBot GScore 适配器时，脚本会把插件目录移到 `plugins-disabled` 保存，避免它与新的 GScore 处理方重复回复。
+
+#### 安装状态和凭据
+
+| 内容 | 获取方式 | 说明 |
+| --- | --- | --- |
+| GsCore `REGISTER_CODE` | 安装结束时打印；也可查看 `gscore/data/config.json` | 用于 GsCore WebUI 首次注册 |
+| NapCat WebUI Token | 脚本循环读取启动日志 | 扫码登录后 Token 可能刷新，以最新日志为准 |
+| AstrBot 初始密码 | 新安装时等待启动日志，最长 120 秒 | 明文只存在于当前容器首次启动日志 |
+| BotShepherd 初始密码 | 脚本循环读取启动日志 | 复用已有数据时继续使用之前设置的密码 |
+| QQ 官方机器人凭据 | 用户输入后写入私有环境文件 | 不写入 README、示例文件或安装摘要 |
+
+AstrBot 的 `cmd_config.json` 只保存 MD5/PBKDF2 密码哈希，不能从配置文件恢复明文。若复用旧数据且当前容器日志中已没有初始密码，请使用之前设置的密码或按 AstrBot 官方方式重置，而不是删除整个数据目录。
+
+脚本使用以下状态文件：
+
+| 文件 | 用途 |
+| --- | --- |
+| `.installer/guided.state` | 当前大方案、处理方和可选组件，不含凭据 |
+| `.installer/guided.env` | Compose 私有参数和凭据，权限为 `600` |
+| `.installer/napcat-identity.env` | NapCat QQ 账号和固定 MAC，权限为 `600` |
+
+这些文件均被 Git 忽略。脚本只有在 Compose 校验、部署和状态检查全部成功后才替换正式状态文件；中途失败会保留上一次可用配置。
+
+BotShepherd 安装完成后，可运行下面的命令快捷查看、新增、删除或重新应用宿主机端口映射。该操作只重建 `nag-botshepherd`，不会重建其他服务。
+
+```bash
+bash install.sh --mode botshepherd-ports
+```
+
+固定路线预设仍支持无人值守安装或仅查看执行计划：
 
 ```bash
 bash install.sh --mode astrbot --yes --master-qq 123456789
 bash install.sh --mode hybrid --yes --master-qq 123456789 --dry-run
 bash install.sh --mode hybrid --botshepherd --yes --master-qq 123456789 --dry-run
 bash install.sh --mode napcat --yes --master-qq 123456789 --dry-run
+bash install.sh --mode nonebot --yes --master-qq 123456789 --bot-qq 987654321 --dry-run
+bash install.sh --mode nonebot-napcat --botshepherd --yes --master-qq 123456789 --bot-qq 987654321 --dry-run
+QQ_APP_ID=xxx QQ_APP_SECRET=xxx QQ_TOKEN=xxx bash install.sh --mode qqofficial-nonebot --yes --dry-run
+QQ_APP_ID=xxx QQ_APP_SECRET=xxx bash install.sh --mode qqofficial-direct --yes --dry-run
 ```
-
-私有 Compose 环境会保存在被 Git 忽略且权限为 `600` 的 `.installer/` 目录。
 
 ### 方式二：传统手动 Docker Compose 部署
 
 先克隆仓库并选择路线。手动部署前请编辑对应的 `.env`；需要适配器自动初始化时，至少填写 `GSCORE_WS_TOKEN` 和 `NAPCAT_MASTER_QQ`，并确保 GsCore 使用相同的 WebSocket Token。
+
+| 路线 | 组合 | GScore 处理方 | NapCat 版本 |
+| --- | --- | --- | --- |
+| 1 | NapCat + AstrBot + GsCore | AstrBot | 当前镜像 |
+| 2 | NapCat + AstrBot + GsCore | NapCat | 固定 v4.18.5 |
+| 3 | NapCat + GsCore 轻量版（NG） | NapCat | 固定 v4.18.5 |
+| 4 | NapCat + NoneBot + GsCore | NoneBot | 当前镜像 |
+| 5 | NapCat + NoneBot + GsCore | NapCat | 固定 v4.18.5 |
+| 6 | QQ 官方机器人 + NoneBot + GsCore | NoneBot | 不使用 NapCat |
+| 7 | QQ 官方机器人 + GsCore | gscore-qqofficial | 不使用 NapCat |
+
+七条路线默认使用相同的容器名和部分宿主机端口，不应以默认配置在同一台服务器上同时启动。
 
 #### 路线 1：AstrBot GScore 适配器
 
@@ -158,9 +268,9 @@ docker compose -f docker-compose.yml -f docker-compose.napcat-adapter.yml ps
 
 该叠加 Compose 会强制固定 NapCat v4.18.5。AstrBot 的 OneBot 平台、管理员 ID，以及 GsCore 主人列表仍需按下文的首次配置说明手动设置。
 
-#### 路线 1/2 可选加入 BotShepherd
+#### 路线 1/2/4/5 可选加入 BotShepherd
 
-先按路线 1 或路线 2 准备 `.env`，确保 `NAPCAT_MASTER_QQ` 已填写，然后追加 `docker-compose.botshepherd.yml`：
+AstrBot 路线追加 `docker-compose.botshepherd.yml`；NoneBot 路线追加 `docker-compose.botshepherd-nonebot.yml`：
 
 ```bash
 # 路线 1 + BotShepherd
@@ -175,6 +285,19 @@ docker compose \
   -f docker-compose.napcat-adapter.yml \
   -f docker-compose.botshepherd.yml \
   config
+
+# 路线 4 + BotShepherd
+docker compose \
+  -f docker-compose.nonebot.yml \
+  -f docker-compose.botshepherd-nonebot.yml \
+  config
+
+# 路线 5 + BotShepherd
+docker compose \
+  -f docker-compose.nonebot.yml \
+  -f docker-compose.napcat-adapter.yml \
+  -f docker-compose.botshepherd-nonebot.yml \
+  config
 ```
 
 随后使用同一组 `-f` 参数执行 `up -d`。需要手动配置时，连接方向为：
@@ -182,7 +305,8 @@ docker compose \
 ```text
 NapCat WebSocket 客户端：ws://botshepherd:2537/OneBotv11
 BotShepherd 客户端监听：ws://0.0.0.0:2537/OneBotv11
-BotShepherd 目标端点：ws://astrbot:6199/ws
+AstrBot 目标端点：ws://astrbot:6199/ws
+NoneBot 目标端点：ws://nonebot:8080/onebot/v11/ws
 ```
 
 `2537` 和 `6199` 都只用于 `nag-net` 容器网络，不需要映射到宿主机。
@@ -202,6 +326,63 @@ docker restart ng-napcat
 docker compose ps
 ```
 
+#### 路线 4：NoneBot GScore 适配器
+
+```bash
+cp .env.example .env
+mkdir -p /opt/nag-data/{nonebot/data,nonebot/plugins,napcat/config,napcat/plugins,napcat/qq,gscore/data,gscore/plugins}
+
+docker compose -f docker-compose.nonebot.yml build nonebot
+docker compose -f docker-compose.nonebot.yml --profile init run --rm napcat-gscore-adapter-disable
+docker compose -f docker-compose.nonebot.yml --profile init run --rm nonebot-onebot-init
+docker compose -f docker-compose.nonebot.yml up -d
+```
+
+该路线加载 NoneBot 的 `GenshinUID`，并自动关闭持久化数据中可能残留的 NapCat GScore 插件。
+
+#### 路线 5：NapCat GScore 适配器 + NoneBot
+
+```bash
+cp .env.example .env
+sed -i 's/^ENABLE_NONEBOT_GSCORE_ADAPTER=.*/ENABLE_NONEBOT_GSCORE_ADAPTER=false/' .env
+mkdir -p /opt/nag-data/{nonebot/data,nonebot/plugins,napcat/config,napcat/plugins,napcat/qq,gscore/data,gscore/plugins}
+
+docker compose -f docker-compose.nonebot.yml build nonebot
+docker compose -f docker-compose.nonebot.yml -f docker-compose.napcat-adapter.yml --profile init run --rm napcat-gscore-adapter-init
+docker compose -f docker-compose.nonebot.yml -f docker-compose.napcat-adapter.yml --profile init run --rm nonebot-onebot-init
+docker compose -f docker-compose.nonebot.yml -f docker-compose.napcat-adapter.yml up -d
+```
+
+该路线必须在启动前将 `ENABLE_NONEBOT_GSCORE_ADAPTER` 设置为 `false`；上面的命令已经完成该设置。此时由 NapCat 插件处理 GScore，NoneBot 只处理普通插件消息，并固定使用 NapCat v4.18.5。
+
+#### 路线 6：QQ 官方机器人 + NoneBot
+
+在私有 `.env` 中填写 `QQ_APP_ID`、`QQ_APP_SECRET`、`QQ_TOKEN` 和可选的 `QQ_ADMIN_IDS`，其中管理员必须填写 QQ 开放平台提供的 OpenID：
+
+```bash
+mkdir -p /opt/nag-qqofficial-data/{nonebot/data,nonebot/plugins,gscore/data,gscore/plugins}
+
+docker compose --env-file .env -f docker-compose.qqofficial.yml build nonebot
+docker compose --env-file .env -f docker-compose.qqofficial.yml up -d gscore nonebot
+```
+
+NoneBot 使用 WebSocket 连接 QQ 官方 Gateway，无需把 8080 端口映射到宿主机。`GenshinUID` 使用共享 `GSCORE_WS_TOKEN` 连接 `gscore:8765`。
+
+#### 路线 7：QQ 官方机器人轻量直连
+
+该路线只使用 `QQ_APP_ID` 和 `QQ_APP_SECRET`，`QQ_TOKEN` 不参与连接。上游 `gscore-qqofficial` 当前没有预构建镜像，Compose 会从核对过的固定提交构建：
+
+```bash
+mkdir -p /opt/nag-qqofficial-data/{gscore/data,gscore/plugins,gscore-qqofficial}
+chown 10001:10001 /opt/nag-qqofficial-data/gscore-qqofficial
+
+docker compose --env-file .env -f docker-compose.qqofficial.yml build gscore-qqofficial
+docker compose --env-file .env -f docker-compose.qqofficial.yml up -d gscore gscore-qqofficial
+docker compose --env-file .env -f docker-compose.qqofficial.yml logs -f gscore-qqofficial
+```
+
+日志同时出现 `已连接 QQ Gateway` 和 `已连接 gsuid_core` 才表示链路完整。群聊和单聊采用 QQ 官方被动回复机制，通常需要在收到消息后的约 5 分钟内回复；管理员命令使用 OpenID 鉴权。
+
 非 root 用户需要用 `sudo` 创建数据目录、将目录所有权交给当前用户，并把 `.env` 中的 `NAPCAT_UID`、`NAPCAT_GID` 改为 `id -u`、`id -g` 的结果。
 
 ## 目录规划
@@ -209,8 +390,9 @@ docker compose ps
 仓库目录只放 Compose、README 和模板文件；运行数据放到仓库外：
 
 ```text
-路线 1/2: /opt/nag-data
-路线 3:   /opt/ng-data
+路线 1/2/4/5: /opt/nag-data
+路线 3:       /opt/ng-data
+路线 6/7:     /opt/nag-qqofficial-data
 ```
 
 这样可以避免 `git pull`、`git status`、`git clean` 影响机器人数据、QQ 登录态和配置文件。
@@ -219,12 +401,15 @@ docker compose ps
 
 默认只绑定到服务器本机 `127.0.0.1`，更适合配合 SSH 隧道或反向代理使用。
 
-```text
-GsCore:  http://127.0.0.1:8765/app/
-AstrBot: http://127.0.0.1:6185
-NapCat:  http://127.0.0.1:6099
-BotShepherd（启用时）: http://127.0.0.1:5111
-```
+| 端口 | 用途 | 默认映射到宿主机 |
+| --- | --- | --- |
+| `8765` | GsCore WebUI 与框架 WebSocket | `127.0.0.1:8765` |
+| `6185` | AstrBot WebUI | `127.0.0.1:6185` |
+| `6099` | NapCat WebUI | `127.0.0.1:6099` |
+| `5111` | BotShepherd WebUI | 启用时映射到 `127.0.0.1:5111` |
+| `6199` | AstrBot OneBot 反向 WebSocket | 仅 Compose 内部网络 |
+| `8080` | NoneBot 驱动监听 | 仅 Compose 内部网络 |
+| `2537` | BotShepherd 默认 OneBot 客户端端点 | 仅 Compose 内部网络 |
 
 从本地电脑访问远程服务器时，可以开一个 SSH 隧道窗口：
 
@@ -402,7 +587,7 @@ http://127.0.0.1:6185
 
 注意：这里不要填 `localhost`。在 Docker 容器中，`localhost` 指 AstrBot 容器自己，不是 GsCore 容器；同一 compose 网络内应使用服务名 `gscore`。
 
-通过 `install.sh` 选择 AstrBot 适配器模式时，安装器会在首次安装时自动创建该插件配置，写入 `gscore:8765` 和与 GsCore 相同的共享 `WS_TOKEN`；token 也会保存在权限为 `600` 的管理环境文件中。已有 AstrBot 插件配置不会被覆盖。选项 1 和选项 2 都会自动配置 OneBot 反向 WebSocket，并在重启后检查 AstrBot 是否已监听 `6199`；启用 BotShepherd 时，NapCat 的目标会自动改为 `ws://botshepherd:2537/OneBotv11`。
+通过 `install.sh` 选择 AstrBot 作为 GScore 处理方时，安装器会在首次安装时自动创建该插件配置，写入 `gscore:8765` 和与 GsCore 相同的共享 `WS_TOKEN`；token 也会保存在权限为 `600` 的管理环境文件中。已有 AstrBot 插件配置不会被覆盖。只要安装 AstrBot，脚本就会自动配置 OneBot 反向 WebSocket；启用 BotShepherd 时，NapCat 的目标会自动改为 `ws://botshepherd:2537/OneBotv11`。
 
 安装器会等待 GsCore WebUI 完全就绪后再执行配置和插件安装，避免在配置文件写入期间重启；NapCat 启动后还会从容器日志中提取并打印 WebUI Token 和带 Token 的登录地址。
 
@@ -464,23 +649,18 @@ http://127.0.0.1:5111
 
 ```text
 客户端端点：ws://0.0.0.0:2537/OneBotv11
-目标端点：ws://astrbot:6199/ws
+AstrBot 目标端点：ws://astrbot:6199/ws
+NoneBot 目标端点：ws://nonebot:8080/onebot/v11/ws
 ```
 
-配置、数据库和日志分别保存在 `/opt/nag-data/botshepherd/config`、`data` 和 `logs`。如果复用已有数据，安装器不会覆盖现有 WebUI 密码和连接配置。
+配置、数据库和日志分别保存在 `/opt/nag-data/botshepherd/config`、`data` 和 `logs`。如果复用已有数据，安装器不会覆盖现有 WebUI 密码；切换 AstrBot/NoneBot 路线时会把默认连接目标更新为当前框架。
 
 #### 管理 BotShepherd 宿主机端口
 
-再次运行安装器：
+运行：
 
 ```bash
-bash install.sh
-```
-
-选择：
-
-```text
-4) 管理 BotShepherd 端口映射（已有部署）
+bash install.sh --mode botshepherd-ports
 ```
 
 管理器支持单个端口和不超过 100 个端口的连续范围，例如：
@@ -605,21 +785,54 @@ services:
 
 ## 常用运维命令
 
+### 一键脚本部署
+
+更新代码后重新运行脚本，选择“修复或更新当前方案”。脚本会复用已有选择和私有配置，并按差异决定需要拉取、构建、重建或重启的组件：
+
+```bash
+git pull --ff-only
+bash install.sh
+```
+
+查看所有 NAG 容器：
+
+```bash
+docker ps --filter name=nag-
+```
+
+查看常用日志：
+
+```bash
+docker logs -f nag-gscore
+docker logs -f nag-astrbot
+docker logs -f nag-napcat
+docker logs -f nag-nonebot
+docker logs -f nag-nonebot-qqofficial
+docker logs -f nag-gscore-qqofficial
+docker logs -f nag-botshepherd
+```
+
+只查看实际启用的容器即可。不要为了更新一键脚本部署而直接运行不带 `-f` 和 `--env-file` 的 `docker compose up`，否则可能使用到传统路线的默认 Compose。
+
+备份默认运行数据和安装状态：
+
+```bash
+tar -czf "nag-backup-$(date +%F).tar.gz" \
+  /opt/nag-data \
+  .installer
+```
+
+如果安装时选择了其他数据目录，请将 `/opt/nag-data` 替换成实际路径。
+
+### 手动 Compose 部署
+
 查看状态：
 
 ```bash
 docker compose ps
 ```
 
-查看日志：
-
-```bash
-docker logs -f nag-gscore
-docker logs -f nag-astrbot
-docker logs -f nag-napcat
-```
-
-重启：
+重启当前手动路线：
 
 ```bash
 docker restart nag-gscore nag-astrbot nag-napcat
@@ -640,7 +853,7 @@ docker compose --profile init run --rm astrbot-plugin-init
 docker restart nag-gscore nag-astrbot
 ```
 
-备份运行数据：
+备份默认运行数据：
 
 ```bash
 tar -czf nag-data-backup.tar.gz -C /opt nag-data
@@ -671,6 +884,18 @@ curl -I http://127.0.0.1:6099
 ```
 
 服务器上能访问、本地不能访问时，多半是 SSH 隧道断开或端口没转发。
+
+### AstrBot 初始密码没有打印或已经忘记
+
+新安装时，AstrBot 通常要在 WebUI 真正就绪后才输出随机初始密码。一键脚本会等待并从当前容器日志提取；也可以手动查看：
+
+```bash
+docker logs nag-astrbot 2>&1 \
+  | sed -n 's/.*Initial password:[[:space:]]*\([^[:space:]]*\).*/\1/p' \
+  | tail -n 1
+```
+
+命令没有输出通常表示 AstrBot 正在复用已有数据，或者产生初始密码的旧容器日志已经随容器重建而消失。`/opt/nag-data/astrbot/cmd_config.json` 中的 `dashboard.password` 和 `pbkdf2_password` 都是哈希，不能还原成明文；不要把哈希直接当作登录密码，也不要为了找回密码直接删除整个 AstrBot 数据目录。
 
 ### NapCat 重启后 QQ 需要重新登录
 

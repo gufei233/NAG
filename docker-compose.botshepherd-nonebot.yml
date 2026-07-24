@@ -1,0 +1,43 @@
+services:
+  botshepherd:
+    image: ${BOTSHEPHERD_IMAGE:-ghcr.io/gufei233/botshepherd:v1.2.1-docker.1}
+    container_name: nag-botshepherd
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      BS_SUPERUSERS: ${NAPCAT_MASTER_QQ:?Set NAPCAT_MASTER_QQ in .env}
+      BS_WEB_USERNAME: ${BOTSHEPHERD_WEB_USERNAME:-admin}
+      BS_WEB_PASSWORD: ${BOTSHEPHERD_WEB_PASSWORD:-}
+      BS_WEB_PORT: "5111"
+      BS_CLIENT_ENDPOINT: ws://0.0.0.0:2537/OneBotv11
+      BS_TARGET_ENDPOINTS: ws://nonebot:8080/onebot/v11/ws
+    ports:
+      - "${BIND_IP:-127.0.0.1}:${BOTSHEPHERD_WEBUI_PORT:-5111}:5111"
+    expose:
+      - "2537"
+    volumes:
+      - ${DATA_ROOT:-/opt/nag-data}/botshepherd/config:/app/config
+      - ${DATA_ROOT:-/opt/nag-data}/botshepherd/data:/app/data
+      - ${DATA_ROOT:-/opt/nag-data}/botshepherd/logs:/app/logs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      nonebot:
+        condition: service_healthy
+    networks:
+      - nag-net
+
+  napcat:
+    depends_on:
+      nonebot:
+        condition: service_healthy
+      botshepherd:
+        condition: service_started
+
+  nonebot-onebot-init:
+    environment:
+      NAPCAT_ONEBOT_WS_URL: ws://botshepherd:2537/OneBotv11
+      NAPCAT_ONEBOT_WS_NAME: BotShepherd
+      BOTSHEPHERD_ENABLED: "1"
+    volumes:
+      - ${DATA_ROOT:-/opt/nag-data}/botshepherd/config:/BotShepherd/config

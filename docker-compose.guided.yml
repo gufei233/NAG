@@ -1,0 +1,341 @@
+name: nag
+
+services:
+  gscore:
+    extends:
+      file: docker-compose.nonebot.yml
+      service: gscore
+    container_name: nag-gscore
+
+  astrbot:
+    extends:
+      file: docker-compose.yml
+      service: astrbot
+
+  nonebot:
+    extends:
+      file: docker-compose.nonebot.yml
+      service: nonebot
+    environment:
+      NONEBOT_PLATFORM: onebot
+      ENABLE_NONEBOT_GSCORE_ADAPTER: ${ENABLE_NONEBOT_GSCORE_ADAPTER:-false}
+
+  nonebot-qqofficial:
+    image: ${NONEBOT_IMAGE:-nag-nonebot:local}
+    build:
+      context: ./nonebot
+    container_name: nag-nonebot-qqofficial
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      HOST: 0.0.0.0
+      PORT: "8080"
+      DRIVER: "~fastapi+~httpx+~websockets"
+      NONEBOT_PLATFORM: qqofficial
+      NAPCAT_MASTER_QQ: ${QQ_ADMIN_IDS:-}
+      ENABLE_NONEBOT_GSCORE_ADAPTER: "true"
+      GSUID_CORE_HOST: gscore
+      GSUID_CORE_PORT: "8765"
+      GSUID_CORE_BOTID: NoneBot2-QQOfficial
+      GSUID_CORE_WS_TOKEN: ${GSCORE_WS_TOKEN:-}
+      QQ_APP_ID: ${QQ_APP_ID:-}
+      QQ_APP_SECRET: ${QQ_APP_SECRET:-}
+      QQ_TOKEN: ${QQ_TOKEN:-}
+      QQ_IS_SANDBOX: ${QQ_IS_SANDBOX:-false}
+    expose:
+      - "8080"
+    volumes:
+      - ${DATA_ROOT:-/opt/nag-data}/nonebot-qqofficial/data:/app/data
+      - ${DATA_ROOT:-/opt/nag-data}/nonebot-qqofficial/plugins:/app/plugins
+    depends_on:
+      - gscore
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import socket; s=socket.create_connection(("127.0.0.1",8080),3); s.close()
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - nag-net
+
+  napcat:
+    image: ${NAPCAT_IMAGE:-mlikiowa/napcat-docker:latest}
+    container_name: nag-napcat
+    restart: unless-stopped
+    environment:
+      NAPCAT_UID: ${NAPCAT_UID:-1000}
+      NAPCAT_GID: ${NAPCAT_GID:-1000}
+      ACCOUNT: ${NAPCAT_ACCOUNT:-}
+    ports:
+      - "${BIND_IP:-127.0.0.1}:${NAPCAT_WEBUI_PORT:-6099}:6099"
+    volumes:
+      - ${DATA_ROOT:-/opt/nag-data}/napcat/config:/app/napcat/config
+      - ${DATA_ROOT:-/opt/nag-data}/napcat/plugins:/app/napcat/plugins
+      - ${DATA_ROOT:-/opt/nag-data}/napcat/qq:/app/.config/QQ
+    networks:
+      - nag-net
+
+  botshepherd:
+    image: ${BOTSHEPHERD_IMAGE:-ghcr.io/gufei233/botshepherd:v1.2.1-docker.1}
+    container_name: nag-botshepherd
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      BS_SUPERUSERS: ${NAPCAT_MASTER_QQ:-}
+      BS_WEB_USERNAME: ${BOTSHEPHERD_WEB_USERNAME:-admin}
+      BS_WEB_PASSWORD: ${BOTSHEPHERD_WEB_PASSWORD:-}
+      BS_WEB_PORT: "5111"
+      BS_CLIENT_ENDPOINT: ws://0.0.0.0:2537/OneBotv11
+      BS_TARGET_ENDPOINTS: ${BOTSHEPHERD_TARGET_ENDPOINTS:-}
+    ports:
+      - "${BIND_IP:-127.0.0.1}:${BOTSHEPHERD_WEBUI_PORT:-5111}:5111"
+    expose:
+      - "2537"
+    volumes:
+      - ${DATA_ROOT:-/opt/nag-data}/botshepherd/config:/app/config
+      - ${DATA_ROOT:-/opt/nag-data}/botshepherd/data:/app/data
+      - ${DATA_ROOT:-/opt/nag-data}/botshepherd/logs:/app/logs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - nag-net
+
+  gscore-qqofficial:
+    image: ${GSCORE_QQOFFICIAL_IMAGE:-nag-gscore-qqofficial:0.7.0-2d582f6}
+    build:
+      context: ${GSCORE_QQOFFICIAL_BUILD_CONTEXT:-https://github.com/An-Sun110/gscore-qqofficial.git#2d582f6478a0c0d94aa31d7151c0acabce65ea21}
+    container_name: nag-gscore-qqofficial
+    restart: unless-stopped
+    init: true
+    environment:
+      QQ_APP_ID: ${QQ_APP_ID:-}
+      QQ_APP_SECRET: ${QQ_APP_SECRET:-}
+      GSCORE_URL: ws://gscore:8765/ws/QQOfficial
+      GSCORE_TOKEN: ${GSCORE_WS_TOKEN:-}
+      QQ_ADMIN_IDS: ${QQ_ADMIN_IDS:-}
+      QQ_API_BASE: ${QQ_API_BASE:-https://api.sgroup.qq.com}
+      LOG_LEVEL: ${QQOFFICIAL_LOG_LEVEL:-INFO}
+      STATE_PATH: /data/state.db
+      QUEUE_SIZE: ${QQOFFICIAL_QUEUE_SIZE:-1000}
+      METRICS_INTERVAL: ${QQOFFICIAL_METRICS_INTERVAL:-60}
+      PROACTIVE_ENABLED: ${QQOFFICIAL_PROACTIVE_ENABLED:-true}
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    volumes:
+      - ${DATA_ROOT:-/opt/nag-data}/gscore-qqofficial:/data
+    depends_on:
+      - gscore
+    stop_grace_period: 20s
+    networks:
+      - nag-net
+
+  astrbot-plugin-init:
+    extends:
+      file: docker-compose.yml
+      service: astrbot-plugin-init
+
+  astrbot-plugin-disable:
+    image: alpine:latest
+    container_name: nag-astrbot-plugin-disable
+    profiles:
+      - init
+    entrypoint:
+      - /bin/sh
+      - -lc
+    command:
+      - |
+        set -eu
+        target=/AstrBot/data/plugins/astrbot_plugin_gscore_adapter
+        if [ -e "$$target" ]; then
+          disabled=/AstrBot/data/plugins-disabled
+          mkdir -p "$$disabled"
+          destination="$$disabled/astrbot_plugin_gscore_adapter.$$(date +%s)"
+          mv "$$target" "$$destination"
+          echo "AstrBot GScore adapter disabled and preserved at $$destination."
+        else
+          echo "AstrBot GScore adapter is not installed; nothing to disable."
+        fi
+    volumes:
+      - ${DATA_ROOT:-/opt/nag-data}/astrbot:/AstrBot/data
+    networks:
+      - nag-net
+
+  astrbot-onebot-init:
+    extends:
+      file: docker-compose.yml
+      service: astrbot-onebot-init
+
+  napcat-gscore-adapter-init:
+    extends:
+      file: docker-compose.napcat-adapter.yml
+      service: napcat-gscore-adapter-init
+
+  napcat-gscore-adapter-disable:
+    extends:
+      file: docker-compose.nonebot.yml
+      service: napcat-gscore-adapter-disable
+
+  gscore-xwuid-deps-init:
+    extends:
+      file: docker-compose.nonebot.yml
+      service: gscore-xwuid-deps-init
+
+  gscore-plugin-init:
+    extends:
+      file: docker-compose.nonebot.yml
+      service: gscore-plugin-init
+
+  guided-onebot-init:
+    image: ${NONEBOT_IMAGE:-nag-nonebot:local}
+    container_name: nag-guided-onebot-init
+    profiles:
+      - init
+    environment:
+      NAPCAT_UID: ${NAPCAT_UID:-1000}
+      NAPCAT_GID: ${NAPCAT_GID:-1000}
+      ENABLE_ASTRBOT: ${ENABLE_ASTRBOT:-0}
+      ENABLE_NONEBOT: ${ENABLE_NONEBOT:-0}
+      BOTSHEPHERD_ENABLED: ${BOTSHEPHERD_ENABLED:-0}
+    entrypoint:
+      - /bin/sh
+      - -lc
+    command:
+      - |
+        set -eu
+        python - <<'PY'
+        import json
+        import os
+        from pathlib import Path
+
+        enable_astrbot = os.environ["ENABLE_ASTRBOT"] == "1"
+        enable_nonebot = os.environ["ENABLE_NONEBOT"] == "1"
+        use_botshepherd = os.environ["BOTSHEPHERD_ENABLED"] == "1"
+        uid = int(os.environ["NAPCAT_UID"])
+        gid = int(os.environ["NAPCAT_GID"])
+
+        downstreams = []
+        if enable_astrbot:
+            downstreams.append(("AstrBot", "ws://astrbot:6199/ws"))
+        if enable_nonebot:
+            downstreams.append(("NoneBot", "ws://nonebot:8080/onebot/v11/ws"))
+
+        known_urls = {
+            "ws://astrbot:6199/ws",
+            "ws://nonebot:8080/onebot/v11/ws",
+            "ws://botshepherd:2537/OneBotv11",
+        }
+        known_names = {"rws", "AstrBot", "NoneBot", "BotShepherd"}
+
+        def load_json(path):
+            return json.loads(path.read_text(encoding="utf-8-sig"))
+
+        def write_json(path, value, owner=None):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_name(path.name + ".tmp")
+            temporary.write_text(
+                json.dumps(value, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            temporary.chmod(0o600)
+            if owner is not None:
+                os.chown(temporary, *owner)
+            temporary.replace(path)
+
+        napcat_dir = Path("/NapCat/config")
+        napcat_paths = sorted(napcat_dir.glob("onebot11*.json"))
+        if not napcat_paths:
+            napcat_paths = [napcat_dir / "onebot11.json"]
+            write_json(
+                napcat_paths[0],
+                {
+                    "network": {
+                        "httpServers": [],
+                        "httpSseServers": [],
+                        "httpClients": [],
+                        "websocketServers": [],
+                        "websocketClients": [],
+                        "plugins": [],
+                    }
+                },
+                (uid, gid),
+            )
+
+        desired_clients = []
+        if use_botshepherd and downstreams:
+            desired_clients.append(
+                ("BotShepherd", "ws://botshepherd:2537/OneBotv11")
+            )
+        elif not use_botshepherd:
+            desired_clients.extend(downstreams)
+
+        for napcat_path in napcat_paths:
+            config = load_json(napcat_path)
+            network = config.setdefault("network", {})
+            clients = network.setdefault("websocketClients", [])
+            clients[:] = [
+                item
+                for item in clients
+                if item.get("url") not in known_urls
+                and item.get("name") not in known_names
+            ]
+            for name, url in desired_clients:
+                clients.append(
+                    {
+                        "enable": True,
+                        "name": name,
+                        "url": url,
+                        "reportSelfMessage": False,
+                        "messagePostFormat": "array",
+                        "token": "",
+                        "debug": False,
+                        "heartInterval": 30000,
+                        "reconnectInterval": 5000,
+                    }
+                )
+            write_json(napcat_path, config, (uid, gid))
+
+        if use_botshepherd and downstreams:
+            connection_path = Path(
+                "/BotShepherd/config/connections/default.json"
+            )
+            if connection_path.is_file():
+                connection = load_json(connection_path)
+            else:
+                connection = {
+                    "name": "NAG OneBot",
+                    "description": "Generated by NAG guided installer",
+                    "client_endpoint": "ws://0.0.0.0:2537/OneBotv11",
+                    "enabled": True,
+                }
+            connection["target_endpoints"] = [url for _, url in downstreams]
+            connection["enabled"] = True
+            write_json(connection_path, connection, (uid, gid))
+
+        print(
+            f"Configured {len(napcat_paths)} NapCat config(s), "
+            f"{len(downstreams)} downstream framework(s), "
+            f"BotShepherd={'on' if use_botshepherd else 'off'}."
+        )
+        PY
+    volumes:
+      - ${DATA_ROOT:-/opt/nag-data}/napcat/config:/NapCat/config
+      - ${DATA_ROOT:-/opt/nag-data}/botshepherd/config:/BotShepherd/config
+    networks:
+      - nag-net
+
+networks:
+  nag-net:
+    name: nag-net
+
+volumes:
+  gscore-venv:
+    name: nag-gscore-venv
+  gscore-playwright:
+    name: nag-gscore-playwright

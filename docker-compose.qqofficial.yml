@@ -1,0 +1,77 @@
+name: nag-qqofficial
+
+services:
+  gscore:
+    extends:
+      file: docker-compose.nonebot.yml
+      service: gscore
+    container_name: nag-qqofficial-gscore
+
+  nonebot:
+    extends:
+      file: docker-compose.nonebot.yml
+      service: nonebot
+    container_name: nag-qqofficial-nonebot
+    environment:
+      NONEBOT_PLATFORM: qqofficial
+      NAPCAT_MASTER_QQ: ${QQ_ADMIN_IDS:-}
+      ENABLE_NONEBOT_GSCORE_ADAPTER: "true"
+      GSUID_CORE_BOTID: NoneBot2
+      QQ_APP_ID: ${QQ_APP_ID:?Set QQ_APP_ID in the private installer environment}
+      QQ_APP_SECRET: ${QQ_APP_SECRET:?Set QQ_APP_SECRET in the private installer environment}
+      QQ_TOKEN: ${QQ_TOKEN:-}
+      QQ_IS_SANDBOX: ${QQ_IS_SANDBOX:-false}
+
+  gscore-qqofficial:
+    image: ${GSCORE_QQOFFICIAL_IMAGE:-nag-gscore-qqofficial:0.7.0-2d582f6}
+    build:
+      context: ${GSCORE_QQOFFICIAL_BUILD_CONTEXT:-https://github.com/An-Sun110/gscore-qqofficial.git#2d582f6478a0c0d94aa31d7151c0acabce65ea21}
+    container_name: nag-gscore-qqofficial
+    restart: unless-stopped
+    init: true
+    environment:
+      QQ_APP_ID: ${QQ_APP_ID:?Set QQ_APP_ID in the private installer environment}
+      QQ_APP_SECRET: ${QQ_APP_SECRET:?Set QQ_APP_SECRET in the private installer environment}
+      GSCORE_URL: ws://gscore:8765/ws/QQOfficial
+      GSCORE_TOKEN: ${GSCORE_WS_TOKEN:?Set GSCORE_WS_TOKEN in the private installer environment}
+      QQ_ADMIN_IDS: ${QQ_ADMIN_IDS:-}
+      QQ_API_BASE: ${QQ_API_BASE:-https://api.sgroup.qq.com}
+      LOG_LEVEL: ${QQOFFICIAL_LOG_LEVEL:-INFO}
+      STATE_PATH: /data/state.db
+      QUEUE_SIZE: ${QQOFFICIAL_QUEUE_SIZE:-1000}
+      METRICS_INTERVAL: ${QQOFFICIAL_METRICS_INTERVAL:-60}
+      PROACTIVE_ENABLED: ${QQOFFICIAL_PROACTIVE_ENABLED:-true}
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    volumes:
+      - ${DATA_ROOT:-/opt/nag-qqofficial-data}/gscore-qqofficial:/data
+    depends_on:
+      - gscore
+    stop_grace_period: 20s
+    networks:
+      - nag-net
+
+  gscore-xwuid-deps-init:
+    extends:
+      file: docker-compose.nonebot.yml
+      service: gscore-xwuid-deps-init
+    container_name: nag-qqofficial-gscore-xwuid-deps-init
+
+  gscore-plugin-init:
+    extends:
+      file: docker-compose.nonebot.yml
+      service: gscore-plugin-init
+    container_name: nag-qqofficial-gscore-plugin-init
+
+networks:
+  nag-net:
+    name: nag-qqofficial-net
+
+volumes:
+  gscore-venv:
+    name: nag-qqofficial-gscore-venv
+  gscore-playwright:
+    name: nag-qqofficial-gscore-playwright
