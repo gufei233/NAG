@@ -5,3 +5,4 @@ docker-compose.override.yml
 **/docker-compose.override.yml
 data/
 **/data/
+__pycache__/
