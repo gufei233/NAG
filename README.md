@@ -77,6 +77,8 @@ QQ 官方机器人的管理员标识是 OpenID，不是数字 QQ 号。脚本不
 
 推荐使用 Linux 服务器。下文以 Ubuntu / Debian 系为例。
 
+> 使用方式一的一键脚本时可跳过本节：脚本进入问答前会自动检测 Docker / Compose V2，缺失时询问并调用 Docker 官方安装脚本自动安装（支持主流发行版；判定为中国大陆网络时自动改用阿里云安装源），守护进程未运行会尝试自动启动。
+
 如果你已经是 `root`，命令前不需要 `sudo`。如果系统提示：
 
 ```text
@@ -163,6 +165,15 @@ bash install.sh
 - 复用 NapCat MAC 与快速登录账号，降低容器重建后重新登录的概率；
 - 按需克隆鸣潮插件套件，安装 Playwright、OpenCV、字体、拼音和 Chromium 等依赖。
 
+问答开始前，脚本还会完成一轮环境自检：
+
+- 检测 Docker / Compose V2 / 守护进程：未安装可自动安装（官方 get.docker.com 脚本，覆盖主流发行版），守护进程未运行会尝试启动；内存偏小或磁盘剩余不足时提前预警；
+- 自动判断中国大陆网络环境（也可用 `--cn` / `--no-cn` 强制指定，结果记录在 `.installer/preflight.env`）：大陆模式下 Docker 用阿里云安装源，可选写入 `/etc/docker/daemon.json` 配置 Docker Hub 镜像加速，鸣潮插件默认改用 CNB 镜像，GsCore 的 pip 源改用清华镜像；
+- 端口提问时会探测宿主机占用（与上次配置相同的端口视为本部署自身，不会误报），避免部署到一半才发现冲突；
+- QQ 官方 AppSecret / Token 改为隐藏输入，重跑脚本时也不再把已保存的旧值明文显示在提示符里。
+
+> 注意：镜像加速默认地址为第三方公共服务（`docker.1ms.run`、`docker.m.daocloud.io`），可用性随时间变化，也可在提问时换成自己的加速地址（如阿里云个人加速）。写入前会备份已有 `daemon.json`，重启 Docker 生效时现有容器会闪断数秒后自动恢复。
+
 更新仓库或调整现有部署：
 
 ```bash
@@ -206,6 +217,23 @@ BotShepherd 安装完成后，可运行下面的命令快捷查看、新增、�
 ```bash
 bash install.sh --mode botshepherd-ports
 ```
+
+随时查看各部署的容器状态、数据目录与 WebUI 地址：
+
+```bash
+bash install.sh --mode status
+```
+
+卸载部署（交互模式会列出已发现的部署供选择；数据目录默认保留，删除需要输入 `yes` 二次确认）：
+
+```bash
+bash install.sh --mode uninstall
+# 无人值守示例：
+bash install.sh --mode uninstall --target all --yes                      # 仅移除容器，保留数据与状态
+bash install.sh --mode uninstall --target nag --yes --purge-data --purge-state
+```
+
+`--target` 可选 `nag`（个人 QQ 的 guided/预设部署）、`ng`（NG 轻量部署）、`nag-qqofficial`（QQ 官方部署）或 `all`。卸载不会删除 Docker 镜像；`.installer/napcat-identity.env` 也默认保留——它保存固定 MAC，删除后重装会生成新 MAC，可能触发 QQ 设备风控，确要删除请在交互模式确认。
 
 固定路线预设仍支持无人值守安装或仅查看执行计划：
 
@@ -751,6 +779,8 @@ ASTRBOT_IMAGE=m.daocloud.io/docker.io/soulter/astrbot:latest
 ```
 
 GsCore 插件仓库默认使用 GitHub；如果 GitHub 较慢，可改用 `https://cnb.cool/gscore-mirror` 下的插件镜像。`.env.example` 已给出常用插件变量。
+
+一键脚本的大陆网络模式（`--cn` 或自动检测）会在这方面自动处理：鸣潮插件问答默认选 CNB 镜像、GsCore 的 `GSCORE_PYTHON_INDEX` 写为清华 PyPI 镜像，并可选配置 Docker Hub 镜像加速（写入 `/etc/docker/daemon.json`，已有 `registry-mirrors` 配置时不改动）。国际网络环境则保持 GitHub 与官方源。
 
 ## NapCat MAC
 

@@ -7,6 +7,7 @@ umask 077
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 readonly STATE_DIR="${NAG_INSTALL_STATE_DIR:-${SCRIPT_DIR}/.installer}"
+readonly PREFLIGHT_STATE_FILE="${STATE_DIR}/preflight.env"
 readonly DOCKER_BIN="${NAG_DOCKER_BIN:-docker}"
 readonly NAPCAT_COMPAT_IMAGE="mlikiowa/napcat-docker:v4.18.5"
 readonly NAPCAT_ADAPTER_LATEST_URL="https://github.com/xiowo/napcat-plugin-gscore-adapter/releases/latest/download/napcat-plugin-gscore-adapter.zip"
@@ -23,57 +24,76 @@ USE_CNB_MIRRORS=0
 USE_BOTSHEPHERD=0
 NAPCAT_MASTER_QQ_OVERRIDE=""
 NAPCAT_ACCOUNT_OVERRIDE=""
+NAG_CN_MODE=""
+UNINSTALL_TARGET=""
+PURGE_DATA=0
+PURGE_STATE=0
 
 log() {
   printf '[NAG] %s\n' "$*"
 }
 
 warn() {
-  printf '[NAG] WARNING: %s\n' "$*" >&2
+  printf '[NAG] 警告：%s\n' "$*" >&2
 }
 
 die() {
-  printf '[NAG] ERROR: %s\n' "$*" >&2
+  printf '[NAG] 错误：%s\n' "$*" >&2
   exit 1
 }
 
+# set -E 使 ERR trap 传播进函数与子 shell；die 走 exit 不触发本 trap，
+# 因此只有未被兜底的命令失败才会打印这段排查提示。
+on_error() {
+  local exit_code="$1"
+  local line="$2"
+  local cmd="$3"
+  printf '[NAG] 命令执行失败（退出码 %s，install.sh 第 %s 行）：%s\n' \
+    "$exit_code" "$line" "$cmd" >&2
+  printf '[NAG] 排查提示：可运行 docker compose -p <项目名> logs --tail 100 查看容器日志（项目名通常为 nag、ng 或 nag-qqofficial）\n' >&2
+}
+trap 'on_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
+
 usage() {
   cat <<'EOF'
-Usage: bash install.sh [options]
+用法：bash install.sh [选项]
 
-Interactive installer for NAG/NG.
+NAG/NG 交互式部署与维护脚本。
 
-Options:
-  --mode MODE   Deployment mode:
-                  guided           Interactive component-based installer
-                  astrbot         NapCat + AstrBot + GsCore, AstrBot adapter
-                  hybrid          NapCat + AstrBot + GsCore, NapCat adapter
-                  napcat          NapCat + GsCore, NapCat adapter
-                  nonebot         NapCat + NoneBot + GsCore, NoneBot adapter
-                  nonebot-napcat  NapCat + NoneBot + GsCore, NapCat adapter
+选项：
+  --mode MODE   运行模式：
+                  guided           组件化交互安装（默认）
+                  astrbot          NapCat + AstrBot + GsCore（AstrBot 适配器）
+                  hybrid           NapCat + AstrBot + GsCore（NapCat 适配器）
+                  napcat           NapCat + GsCore（NapCat 适配器，NG 轻量版）
+                  nonebot          NapCat + NoneBot + GsCore（NoneBot 适配器）
+                  nonebot-napcat   NapCat + NoneBot + GsCore（NapCat 适配器）
                   qqofficial-nonebot
-                                  QQ Official + NoneBot QQ adapter + GsCore
+                                   QQ 官方机器人 + NoneBot QQ 适配器 + GsCore
                   qqofficial-direct
-                                  QQ Official + gscore-qqofficial + GsCore
+                                   QQ 官方机器人 + gscore-qqofficial + GsCore
                   botshepherd-ports
-                                  Manage host port mappings for an existing
-                                  BotShepherd deployment
-  --botshepherd
-                Add BotShepherd between NapCat and AstrBot/NoneBot in modes
-                that include one of those frameworks
-  --yes         Accept the recommended answers for optional questions
+                                   管理现有 BotShepherd 部署的宿主机端口映射
+                  status           查看各部署的容器状态与访问地址
+                  uninstall        卸载部署（可选删除数据目录与状态文件）
+  --botshepherd 在包含 AstrBot/NoneBot 的模式中加入 BotShepherd
+  --yes         非交互模式，可选问题按推荐值回答
   --master-qq QQ
-                Master QQ for GsCore and the NapCat GScore adapter. Separate
-                multiple accounts with commas.
-  --bot-qq QQ   QQ account used by NapCat. Persist it for quick login after
-                rebuilding the container.
-  --dry-run     Print the selected plan without changing the host
-  -h, --help    Show this help
+                GsCore 与 NapCat GScore 适配器的主人 QQ，多个用英文逗号分隔
+  --bot-qq QQ   NapCat 登录的机器人 QQ，持久化后重建容器可快速登录
+  --cn          按中国大陆网络环境处理（Docker 用阿里云安装源、配置镜像加速、
+                鸣潮插件与 PyPI 使用国内源）
+  --no-cn       强制按国际网络环境处理
+  --target T    配合 --mode uninstall 使用：nag、ng、nag-qqofficial 或 all
+  --purge-data  卸载时同时删除数据目录（不可恢复；非交互卸载默认保留）
+  --purge-state 卸载时同时删除安装器状态文件（不含 NapCat 身份文件）
+  --dry-run     只打印所选计划，不改动主机
+  -h, --help    显示本帮助
 
-The installer stores its private Compose environment under .installer/.
-QQ Official credentials can be supplied through QQ_APP_ID, QQ_APP_SECRET, and
-QQ_TOKEN (NoneBot route only) for unattended installation.
-Personal QQ login and GsCore administrator registration remain manual WebUI steps.
+安装器的私有 Compose 环境保存在 .installer/ 下。
+QQ 官方凭据可通过环境变量 QQ_APP_ID、QQ_APP_SECRET、QQ_TOKEN（仅 NoneBot 路线）
+提供，以实现无人值守安装。个人 QQ 登录与 GsCore 管理员注册仍需在 WebUI 手动完成。
+安装前会自动检测 Docker 环境，缺失时可自动安装（大陆网络自动改用国内镜像源）。
 EOF
 }
 
@@ -102,6 +122,27 @@ while (($# > 0)); do
       USE_BOTSHEPHERD=1
       shift
       ;;
+    --cn)
+      NAG_CN_MODE=1
+      shift
+      ;;
+    --no-cn)
+      NAG_CN_MODE=0
+      shift
+      ;;
+    --target)
+      (($# >= 2)) || die "--target 需要一个值"
+      UNINSTALL_TARGET="$2"
+      shift 2
+      ;;
+    --purge-data)
+      PURGE_DATA=1
+      shift
+      ;;
+    --purge-state)
+      PURGE_STATE=1
+      shift
+      ;;
     --dry-run)
       DRY_RUN=1
       shift
@@ -111,22 +152,22 @@ while (($# > 0)); do
       exit 0
       ;;
     *)
-      die "unknown option: $1"
+      die "未知选项：$1"
       ;;
   esac
 done
 
 choose_mode() {
   if [[ -z "$MODE" ]]; then
-    [[ -t 0 ]] || die "no interactive terminal; pass --mode and optionally --yes"
+    [[ -t 0 ]] || die "当前不是交互式终端；请通过 --mode 指定模式，必要时加 --yes"
     MODE="guided"
   fi
 
   case "$MODE" in
-    guided|botshepherd-ports) ;;
+    guided|botshepherd-ports|status) ;;
     *)
       if (( ! ASSUME_YES )) && [[ ! -t 0 ]]; then
-        die "mode '$MODE' prompts for input without --yes; add --yes (plus any required options or environment variables) for unattended installation"
+        die "模式 '$MODE' 需要交互输入；无人值守安装请加 --yes（以及必需的选项或环境变量）"
       fi
       ;;
   esac
@@ -190,14 +231,707 @@ env_default() {
 validate_port() {
   local name="$1"
   local value="$2"
-  [[ "$value" =~ ^[0-9]+$ ]] || die "$name must be a number"
-  ((10#$value >= 1 && 10#$value <= 65535)) || die "$name must be between 1 and 65535"
+  [[ "$value" =~ ^[0-9]+$ ]] || die "$name 必须是数字"
+  ((10#$value >= 1 && 10#$value <= 65535)) || die "$name 必须在 1-65535 之间"
 }
 
 validate_single_line() {
   local name="$1"
   local value="$2"
-  [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || die "$name must be a single line"
+  [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || die "$name 不能包含换行"
+}
+
+as_root() {
+  if ((EUID == 0)); then
+    "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo "$@"
+  else
+    die "需要 root 权限执行：$*（当前非 root 且未安装 sudo）"
+  fi
+}
+
+detect_pkg_manager() {
+  local mgr
+  for mgr in apt-get dnf yum zypper apk; do
+    if command -v "$mgr" >/dev/null 2>&1; then
+      printf '%s' "$mgr"
+      return 0
+    fi
+  done
+  return 0
+}
+
+pkg_install() {
+  local mgr
+  mgr="$(detect_pkg_manager)"
+  case "$mgr" in
+    apt-get)
+      as_root env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+      as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
+      ;;
+    dnf) as_root dnf install -y "$@" ;;
+    yum) as_root yum install -y "$@" ;;
+    zypper) as_root zypper --non-interactive install "$@" ;;
+    apk) as_root apk add "$@" ;;
+    *)
+      warn "未识别的包管理器，无法自动安装：$*"
+      return 1
+      ;;
+  esac
+}
+
+ensure_host_cmd() {
+  local cmd="$1"
+  local pkg="$2"
+
+  if command -v "$cmd" >/dev/null 2>&1; then
+    return 0
+  fi
+  warn "缺少命令：${cmd}"
+  if prompt_yes_no "通过系统包管理器自动安装 ${pkg}" y; then
+    if pkg_install "$pkg" && command -v "$cmd" >/dev/null 2>&1; then
+      log "${pkg} 安装完成"
+      return 0
+    fi
+  fi
+  die "缺少 ${cmd}；请先手动安装（如：apt-get install -y ${pkg} 或 yum install -y ${pkg}）"
+}
+
+probe_cn_network() {
+  command -v curl >/dev/null 2>&1 || return 1
+  if curl -fsSL -m 4 -o /dev/null https://www.google.com/generate_204 2>/dev/null; then
+    return 1
+  fi
+  return 0
+}
+
+resolve_cn_mode() {
+  local detected=0
+  local saved
+  local default_answer
+
+  if [[ -n "$NAG_CN_MODE" ]]; then
+    return 0
+  fi
+  saved="$(env_value NAG_CN "$PREFLIGHT_STATE_FILE" || true)"
+  if [[ "$saved" == "0" || "$saved" == "1" ]]; then
+    NAG_CN_MODE="$saved"
+    return 0
+  fi
+  # dry-run 不探测网络、不提问、不落盘，保持输出稳定
+  if ((DRY_RUN)); then
+    NAG_CN_MODE=0
+    return 0
+  fi
+  if probe_cn_network; then
+    detected=1
+    log "检测到国际网络访问受限，推测服务器位于中国大陆网络环境"
+  fi
+  if [[ -t 0 ]] && (( ! ASSUME_YES )); then
+    default_answer="$([[ "$detected" == 1 ]] && printf y || printf n)"
+    if prompt_yes_no "是否按中国大陆网络环境优化（Docker 安装源/镜像加速/国内 PyPI 源）" "$default_answer"; then
+      NAG_CN_MODE=1
+    else
+      NAG_CN_MODE=0
+    fi
+  else
+    NAG_CN_MODE="$detected"
+    log "按$([[ "$NAG_CN_MODE" == "1" ]] && printf 大陆 || printf 国际)网络环境处理（可用 --cn / --no-cn 覆盖）"
+  fi
+  mkdir -p "$STATE_DIR"
+  printf '# 由 install.sh 生成的环境预检记录\nNAG_CN=%s\n' "$NAG_CN_MODE" >"$PREFLIGHT_STATE_FILE"
+  chmod 600 "$PREFLIGHT_STATE_FILE"
+  return 0
+}
+
+cn_enabled() {
+  resolve_cn_mode
+  [[ "$NAG_CN_MODE" == "1" ]]
+}
+
+cnb_mirror_default() {
+  if cn_enabled; then
+    printf 'y'
+  else
+    printf 'n'
+  fi
+}
+
+gscore_python_index() {
+  if cn_enabled; then
+    printf 'https://pypi.tuna.tsinghua.edu.cn/simple/'
+  else
+    printf 'https://pypi.org/simple/'
+  fi
+}
+
+install_docker_engine() {
+  local script_file
+
+  ensure_host_cmd curl curl
+  script_file="$(mktemp)"
+  log "下载 Docker 官方安装脚本（get.docker.com）"
+  if ! curl -fsSL --connect-timeout 15 https://get.docker.com -o "$script_file"; then
+    rm -f "$script_file"
+    die "下载 Docker 安装脚本失败。请手动安装后重跑本脚本：
+  国际网络：curl -fsSL https://get.docker.com | sh
+  大陆网络：curl -fsSL https://get.docker.com -o get-docker.sh && sh get-docker.sh --mirror Aliyun"
+  fi
+  if cn_enabled; then
+    log "使用阿里云软件源安装 Docker（大陆网络模式）"
+    if ! as_root sh "$script_file" --mirror Aliyun; then
+      rm -f "$script_file"
+      die "Docker 自动安装失败；可尝试手动执行：curl -fsSL https://get.docker.com -o get-docker.sh && sh get-docker.sh --mirror Aliyun"
+    fi
+  else
+    log "使用官方软件源安装 Docker"
+    if ! as_root sh "$script_file"; then
+      rm -f "$script_file"
+      die "Docker 自动安装失败；可尝试手动执行：curl -fsSL https://get.docker.com | sh"
+    fi
+  fi
+  rm -f "$script_file"
+  command -v "$DOCKER_BIN" >/dev/null 2>&1 \
+    || die "安装流程结束但仍未找到 docker 命令；请检查上方安装日志"
+  log "Docker 安装完成：$("$DOCKER_BIN" --version 2>/dev/null || printf '未知版本')"
+  return 0
+}
+
+ensure_docker_daemon() {
+  local attempt
+
+  if "$DOCKER_BIN" info >/dev/null 2>&1; then
+    return 0
+  fi
+  log "Docker 守护进程未运行，尝试启动"
+  if command -v systemctl >/dev/null 2>&1; then
+    as_root systemctl enable --now docker >/dev/null 2>&1 || true
+  elif command -v service >/dev/null 2>&1; then
+    as_root service docker start >/dev/null 2>&1 || true
+  fi
+  for ((attempt = 1; attempt <= 10; attempt++)); do
+    if "$DOCKER_BIN" info >/dev/null 2>&1; then
+      log "Docker 守护进程已启动"
+      return 0
+    fi
+    sleep 2
+  done
+  die "无法连接 Docker 守护进程；请手动检查：systemctl status docker（或 service docker status）"
+}
+
+ensure_compose_plugin() {
+  if "$DOCKER_BIN" compose version >/dev/null 2>&1; then
+    return 0
+  fi
+  warn "检测到 Docker 但缺少 Compose V2 插件"
+  if prompt_yes_no "尝试通过系统包管理器安装 docker-compose-plugin" y; then
+    if pkg_install docker-compose-plugin \
+      && "$DOCKER_BIN" compose version >/dev/null 2>&1; then
+      log "Docker Compose V2 安装完成"
+      return 0
+    fi
+    warn "docker-compose-plugin 安装未成功"
+  fi
+  die "需要 Docker Compose V2。可重跑 Docker 官方安装脚本补齐：curl -fsSL https://get.docker.com | sh（大陆网络加 --mirror Aliyun）"
+}
+
+restart_docker_daemon() {
+  local attempt
+
+  if command -v systemctl >/dev/null 2>&1; then
+    as_root systemctl restart docker
+  elif command -v service >/dev/null 2>&1; then
+    as_root service docker restart
+  else
+    warn "未找到 systemctl/service，请手动重启 Docker"
+    return 1
+  fi
+  for ((attempt = 1; attempt <= 15; attempt++)); do
+    if "$DOCKER_BIN" info >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+nag_containers_running() {
+  local proj
+  for proj in nag ng nag-qqofficial; do
+    if [[ -n "$("$DOCKER_BIN" ps -q --filter "label=com.docker.compose.project=${proj}" 2>/dev/null)" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+configure_registry_mirror() {
+  local daemon_json="/etc/docker/daemon.json"
+  local mirrors_default="https://docker.1ms.run,https://docker.m.daocloud.io"
+  local mirrors_csv=""
+  local mirrors_json=""
+  local mirror
+  local merged_tmp
+  local -a mirror_list=()
+
+  if "$DOCKER_BIN" info 2>/dev/null | grep -qi 'Registry Mirrors'; then
+    log "Docker 已配置镜像加速，跳过"
+    return 0
+  fi
+  if [[ -f "$daemon_json" ]] && grep -q 'registry-mirrors' "$daemon_json" 2>/dev/null; then
+    log "检测到 ${daemon_json} 已包含 registry-mirrors，跳过"
+    return 0
+  fi
+  if ! prompt_yes_no "配置 Docker Hub 镜像加速（大陆拉取镜像通常必需；默认使用第三方公共镜像源）" y; then
+    log "已跳过镜像加速；如拉取镜像超时，可重跑脚本或手动配置 ${daemon_json}"
+    return 0
+  fi
+  mirrors_csv="$(prompt_value "镜像加速地址（多个用英文逗号分隔，可换成自己的阿里云加速地址）" "$mirrors_default")"
+  IFS=',' read -r -a mirror_list <<<"$mirrors_csv"
+  for mirror in "${mirror_list[@]}"; do
+    mirror="${mirror//[[:space:]]/}"
+    if [[ -z "$mirror" ]]; then
+      continue
+    fi
+    [[ "$mirror" =~ ^https?:// ]] || die "镜像加速地址需以 http(s):// 开头：${mirror}"
+    mirrors_json+="\"${mirror}\", "
+  done
+  mirrors_json="[${mirrors_json%, }]"
+  if [[ "$mirrors_json" == "[]" ]]; then
+    warn "未提供有效的镜像加速地址，跳过"
+    return 0
+  fi
+
+  if [[ -f "$daemon_json" ]]; then
+    if ! command -v python3 >/dev/null 2>&1; then
+      warn "${daemon_json} 已存在且缺少 python3，无法自动合并；请手动加入 \"registry-mirrors\": ${mirrors_json} 后重启 Docker"
+      return 0
+    fi
+    merged_tmp="$(mktemp)"
+    if ! as_root python3 -c '
+import json, sys
+path = sys.argv[1]
+mirrors = [m.strip() for m in sys.argv[2].split(",") if m.strip()]
+with open(path, encoding="utf-8") as fh:
+    data = json.load(fh)
+data["registry-mirrors"] = mirrors
+print(json.dumps(data, indent=2, ensure_ascii=False))
+' "$daemon_json" "$mirrors_csv" >"$merged_tmp"; then
+      rm -f "$merged_tmp"
+      warn "解析 ${daemon_json} 失败（可能不是合法 JSON）；请手动加入 registry-mirrors 后重启 Docker"
+      return 0
+    fi
+    as_root cp "$daemon_json" "${daemon_json}.bak-nag"
+    as_root cp "$merged_tmp" "$daemon_json"
+    rm -f "$merged_tmp"
+  else
+    as_root mkdir -p /etc/docker
+    printf '{\n  "registry-mirrors": %s\n}\n' "$mirrors_json" | as_root tee "$daemon_json" >/dev/null
+  fi
+  as_root chmod 644 "$daemon_json"
+
+  if nag_containers_running; then
+    warn "重启 Docker 会短暂重启现有容器（机器人闪断数秒后自动恢复）"
+    if ! prompt_yes_no "现在重启 Docker 使镜像加速生效" y; then
+      warn "配置已写入 ${daemon_json}；请稍后手动重启 Docker（systemctl restart docker）"
+      return 0
+    fi
+  fi
+  log "重启 Docker 守护进程以应用镜像加速"
+  restart_docker_daemon || die "Docker 重启后未就绪；请手动检查 systemctl status docker"
+  if "$DOCKER_BIN" info 2>/dev/null | grep -qi 'Registry Mirrors'; then
+    log "镜像加速已生效：${mirrors_csv}"
+  else
+    warn "已写入 ${daemon_json}，但当前守护进程尚未加载该配置；请手动重启 Docker 后生效"
+  fi
+  return 0
+}
+
+check_resources() {
+  local mem_kb=""
+  local swap_kb=""
+  local docker_root
+  local avail_kb=""
+
+  if [[ -r /proc/meminfo ]]; then
+    mem_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+    swap_kb="$(awk '/^SwapTotal:/ {print $2}' /proc/meminfo)"
+    if [[ "$mem_kb" =~ ^[0-9]+$ ]] && ((mem_kb < 1536 * 1024)); then
+      warn "内存较小（$((mem_kb / 1024)) MiB）；构建 NoneBot 镜像或多容器同时运行时可能内存不足"
+      if [[ ! "$swap_kb" =~ ^[0-9]+$ ]] || ((swap_kb == 0)); then
+        warn "未检测到 swap；建议先创建 swap（如 fallocate -l 2G /swapfile）再继续"
+      fi
+    fi
+  fi
+  docker_root="$("$DOCKER_BIN" info -f '{{.DockerRootDir}}' 2>/dev/null || true)"
+  docker_root="${docker_root:-/var/lib/docker}"
+  [[ -d "$docker_root" ]] || docker_root="/"
+  avail_kb="$(df -Pk "$docker_root" 2>/dev/null | awk 'NR == 2 {print $4}')"
+  if [[ "$avail_kb" =~ ^[0-9]+$ ]] && ((avail_kb < 5 * 1024 * 1024)); then
+    warn "磁盘空间偏低：${docker_root} 所在分区仅剩 $((avail_kb / 1024 / 1024)) GiB，拉取镜像与构建可能失败"
+  fi
+  return 0
+}
+
+# 在进入业务问答前完成环境自检；dry-run 保持零依赖、零改动
+preflight_environment() {
+  if ((DRY_RUN)); then
+    return 0
+  fi
+  if ! command -v "$DOCKER_BIN" >/dev/null 2>&1; then
+    warn "未检测到 Docker"
+    if prompt_yes_no "自动安装 Docker（官方安装脚本；大陆网络自动使用阿里云软件源）" y; then
+      install_docker_engine
+    else
+      die "缺少 Docker。手动安装：curl -fsSL https://get.docker.com | sh（大陆网络：sh get-docker.sh --mirror Aliyun），完成后重跑本脚本"
+    fi
+  fi
+  ensure_docker_daemon
+  ensure_compose_plugin
+  if cn_enabled; then
+    configure_registry_mirror
+  fi
+  check_resources
+  return 0
+}
+
+port_in_use() {
+  local ip="$1"
+  local port="$2"
+
+  if [[ -z "$ip" || "$ip" == "0.0.0.0" ]]; then
+    ip="127.0.0.1"
+  fi
+  command -v timeout >/dev/null 2>&1 || return 1
+  timeout 1 bash -c "exec 3<>/dev/tcp/${ip}/${port}" 2>/dev/null
+}
+
+# 端口提问：校验数值并探测占用；与上次配置相同的端口视为本部署
+# 自身的容器在监听，跳过探测避免重跑时误报
+prompt_port() {
+  local label="$1"
+  local value="$2"
+  local previous="$3"
+  local bind_ip="$4"
+
+  if ((ASSUME_YES)); then
+    if [[ -z "$previous" || "$value" != "$previous" ]] \
+      && port_in_use "$bind_ip" "$value"; then
+      warn "端口 ${value} 疑似已被占用，--yes 模式下将继续使用"
+    fi
+    printf '%s' "$value"
+    return 0
+  fi
+  while true; do
+    value="$(prompt_value "$label" "$value")"
+    if [[ ! "$value" =~ ^[0-9]+$ ]] || ((10#$value < 1 || 10#$value > 65535)); then
+      warn "${label} 需为 1-65535 之间的数字"
+      continue
+    fi
+    if [[ -n "$previous" && "$value" == "$previous" ]]; then
+      break
+    fi
+    if port_in_use "$bind_ip" "$value"; then
+      warn "端口 ${value} 已被其他进程占用"
+      if prompt_yes_no "仍然使用端口 ${value}" n; then
+        break
+      fi
+      continue
+    fi
+    break
+  done
+  printf '%s' "$value"
+}
+
+# 敏感凭据输入：不回显，已有值不再以明文默认值形式打印到终端
+prompt_secret() {
+  local label="$1"
+  local current="$2"
+  local value=""
+
+  if ((ASSUME_YES)); then
+    printf '%s' "$current"
+    return 0
+  fi
+  if [[ -n "$current" ]]; then
+    read -r -s -p "${label}（已配置，回车保留当前值）: " value
+  else
+    read -r -s -p "${label}: " value
+  fi
+  printf '\n' >&2
+  printf '%s' "${value:-$current}"
+}
+
+project_label() {
+  case "$1" in
+    nag) printf '个人 QQ 部署（guided/预设模式）' ;;
+    ng) printf 'NG 轻量部署（napcat 模式）' ;;
+    nag-qqofficial) printf 'QQ 官方机器人部署' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+newest_env_file_for_project() {
+  local proj="$1"
+  local newest=""
+  local name
+  local -a names=()
+
+  case "$proj" in
+    nag)
+      names=(guided.env astrbot.env hybrid.env nonebot.env nonebot-napcat.env
+        astrbot-botshepherd.env hybrid-botshepherd.env nonebot-botshepherd.env
+        nonebot-napcat-botshepherd.env)
+      ;;
+    ng) names=(napcat.env) ;;
+    nag-qqofficial) names=(qqofficial-nonebot.env qqofficial-direct.env) ;;
+  esac
+  for name in "${names[@]}"; do
+    if [[ -f "${STATE_DIR}/${name}" ]] \
+      && { [[ -z "$newest" ]] || [[ "${STATE_DIR}/${name}" -nt "$newest" ]]; }; then
+      newest="${STATE_DIR}/${name}"
+    fi
+  done
+  printf '%s' "$newest"
+}
+
+status_mode() {
+  local proj
+  local ids
+  local env_file
+  local data_root
+  local bind_ip
+  local port
+  local services
+  local svc
+  local printed=0
+
+  command -v "$DOCKER_BIN" >/dev/null 2>&1 || die "未检测到 Docker，无法查询状态"
+  "$DOCKER_BIN" compose version >/dev/null 2>&1 || die "需要 Docker Compose V2"
+  "$DOCKER_BIN" info >/dev/null 2>&1 || die "无法连接 Docker 守护进程；请检查服务状态与用户权限"
+
+  for proj in nag ng nag-qqofficial; do
+    ids="$("$DOCKER_BIN" compose -p "$proj" ps -aq 2>/dev/null || true)"
+    env_file="$(newest_env_file_for_project "$proj")"
+    if [[ -z "$ids" && -z "$env_file" ]]; then
+      continue
+    fi
+    printed=1
+    printf '\n=== %s（compose 项目：%s）===\n' "$(project_label "$proj")" "$proj"
+    if [[ -n "$ids" ]]; then
+      "$DOCKER_BIN" compose -p "$proj" ps
+    else
+      log "没有容器（可能已卸载或尚未部署，仅存在配置文件）"
+    fi
+    if [[ -n "$env_file" ]]; then
+      data_root="$(env_value DATA_ROOT "$env_file" || true)"
+      bind_ip="$(env_value BIND_IP "$env_file" || true)"
+      bind_ip="${bind_ip:-127.0.0.1}"
+      [[ -z "$data_root" ]] || printf '数据目录：%s\n' "$data_root"
+      printf '配置文件：%s\n' "$env_file"
+      services="$("$DOCKER_BIN" compose -p "$proj" ps --format '{{.Service}}' 2>/dev/null || true)"
+      for svc in $services; do
+        case "$svc" in
+          gscore)
+            port="$(env_value GSCORE_PORT "$env_file" || true)"
+            [[ -z "$port" ]] || printf 'GsCore WebUI：http://%s:%s/app/\n' "$bind_ip" "$port"
+            ;;
+          napcat)
+            port="$(env_value NAPCAT_WEBUI_PORT "$env_file" || true)"
+            [[ -z "$port" ]] || printf 'NapCat WebUI：http://%s:%s\n' "$bind_ip" "$port"
+            ;;
+          astrbot)
+            port="$(env_value ASTRBOT_WEBUI_PORT "$env_file" || true)"
+            [[ -z "$port" ]] || printf 'AstrBot WebUI：http://%s:%s\n' "$bind_ip" "$port"
+            ;;
+          botshepherd)
+            port="$(env_value BOTSHEPHERD_WEBUI_PORT "$env_file" || true)"
+            [[ -z "$port" ]] || printf 'BotShepherd WebUI：http://%s:%s\n' "$bind_ip" "$port"
+            ;;
+        esac
+      done
+    fi
+    printf '查看日志：docker compose -p %s logs --tail 100 <服务名>\n' "$proj"
+  done
+
+  if (( ! printed )); then
+    log "未检测到任何 NAG 部署（compose 项目 nag / ng / nag-qqofficial 均无容器与配置）"
+  fi
+  return 0
+}
+
+uninstall_data_dir() {
+  local data_root="$1"
+  local purge=0
+  local confirm
+
+  case "$data_root" in
+    /|/bin|/boot|/dev|/etc|/home|/lib|/lib64|/media|/mnt|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/var)
+      warn "数据目录 ${data_root} 是系统关键路径，跳过删除"
+      return 0
+      ;;
+  esac
+  if [[ "$data_root" != /* ]]; then
+    warn "数据目录路径异常（${data_root}），跳过删除"
+    return 0
+  fi
+  if [[ ! -e "$data_root" ]]; then
+    return 0
+  fi
+  if ((PURGE_DATA)); then
+    purge=1
+  elif [[ -t 0 ]] && (( ! ASSUME_YES )); then
+    if prompt_yes_no "删除数据目录 ${data_root}（含机器人全部数据，不可恢复）" n; then
+      confirm="$(prompt_value "请输入 yes 确认删除 ${data_root}" "")"
+      if [[ "$confirm" == "yes" ]]; then
+        purge=1
+      else
+        warn "确认失败，保留数据目录"
+      fi
+    fi
+  fi
+  if ((purge)); then
+    log "删除数据目录 ${data_root}"
+    as_root rm -rf -- "$data_root"
+  else
+    log "保留数据目录 ${data_root}"
+  fi
+  return 0
+}
+
+uninstall_state_files() {
+  local proj="$1"
+  local purge=0
+  local name
+  local -a names=()
+
+  case "$proj" in
+    nag)
+      names=(guided.env guided.state astrbot.env hybrid.env nonebot.env
+        nonebot-napcat.env astrbot-botshepherd.env hybrid-botshepherd.env
+        nonebot-botshepherd.env nonebot-napcat-botshepherd.env
+        botshepherd-ports.list docker-compose.botshepherd-ports.yml)
+      ;;
+    ng) names=(napcat.env) ;;
+    nag-qqofficial) names=(qqofficial-nonebot.env qqofficial-direct.env) ;;
+  esac
+  if ((PURGE_STATE)); then
+    purge=1
+  elif [[ -t 0 ]] && (( ! ASSUME_YES )); then
+    if prompt_yes_no "删除该部署的安装器状态文件（.installer/ 下的配置记录，不含 NapCat 身份）" y; then
+      purge=1
+    fi
+  fi
+  if (( ! purge )); then
+    log "保留 ${proj} 的状态文件"
+    return 0
+  fi
+  for name in "${names[@]}"; do
+    rm -f -- "${STATE_DIR}/${name}" "${STATE_DIR}/${name}.tmp"
+  done
+  log "已删除 ${proj} 的状态文件"
+  return 0
+}
+
+uninstall_mode() {
+  local proj
+  local choice
+  local env_file
+  local data_root
+  local identity_involved=0
+  local index
+  local -a candidates=()
+  local -a selected=()
+
+  command -v "$DOCKER_BIN" >/dev/null 2>&1 || die "未检测到 Docker，无法卸载"
+  "$DOCKER_BIN" compose version >/dev/null 2>&1 || die "需要 Docker Compose V2"
+  "$DOCKER_BIN" info >/dev/null 2>&1 || die "无法连接 Docker 守护进程；请检查服务状态与用户权限"
+
+  for proj in nag ng nag-qqofficial; do
+    if [[ -n "$("$DOCKER_BIN" compose -p "$proj" ps -aq 2>/dev/null || true)" ]] \
+      || [[ -n "$(newest_env_file_for_project "$proj")" ]]; then
+      candidates+=("$proj")
+    fi
+  done
+  if ((${#candidates[@]} == 0)); then
+    log "未检测到任何 NAG 部署，无需卸载"
+    return 0
+  fi
+
+  if [[ -n "$UNINSTALL_TARGET" ]]; then
+    case "$UNINSTALL_TARGET" in
+      all)
+        selected=("${candidates[@]}")
+        ;;
+      nag|ng|nag-qqofficial)
+        for proj in "${candidates[@]}"; do
+          if [[ "$proj" == "$UNINSTALL_TARGET" ]]; then
+            selected+=("$proj")
+          fi
+        done
+        ((${#selected[@]} > 0)) || die "未发现目标部署：${UNINSTALL_TARGET}"
+        ;;
+      *)
+        die "--target 仅支持 nag、ng、nag-qqofficial 或 all"
+        ;;
+    esac
+  elif [[ -t 0 ]] && (( ! ASSUME_YES )); then
+    printf '发现以下部署：\n'
+    index=1
+    for proj in "${candidates[@]}"; do
+      printf '  %d) %s（compose 项目：%s）\n' "$index" "$(project_label "$proj")" "$proj"
+      index=$((index + 1))
+    done
+    printf '  %d) 全部卸载\n' "$index"
+    while true; do
+      read -r -p "请选择要卸载的部署 [1-${index}]: " choice
+      if [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= index)); then
+        break
+      fi
+      warn "请输入 1 到 ${index} 之间的数字"
+    done
+    if ((choice == index)); then
+      selected=("${candidates[@]}")
+    else
+      selected=("${candidates[choice - 1]}")
+    fi
+  else
+    die "非交互卸载需要 --target 指定要卸载的部署（nag、ng、nag-qqofficial 或 all）"
+  fi
+
+  for proj in "${selected[@]}"; do
+    log "停止并移除容器与网络（compose 项目：${proj}）"
+    if ! "$DOCKER_BIN" compose -p "$proj" down --remove-orphans --volumes; then
+      warn "docker compose -p ${proj} down 失败，继续后续清理"
+    fi
+    env_file="$(newest_env_file_for_project "$proj")"
+    data_root=""
+    [[ -z "$env_file" ]] || data_root="$(env_value DATA_ROOT "$env_file" || true)"
+    if [[ -n "$data_root" ]]; then
+      uninstall_data_dir "$data_root"
+    fi
+    uninstall_state_files "$proj"
+    if [[ "$proj" != "nag-qqofficial" ]]; then
+      identity_involved=1
+    fi
+  done
+
+  if ((identity_involved)) && [[ -f "${STATE_DIR}/napcat-identity.env" ]]; then
+    if [[ -t 0 ]] && (( ! ASSUME_YES )); then
+      warn "napcat-identity.env 保存共享的 NapCat MAC 与账号；删除后下次安装会生成新 MAC，可能触发 QQ 设备风控"
+      if prompt_yes_no "同时删除 NapCat 身份文件" n; then
+        rm -f -- "${STATE_DIR}/napcat-identity.env" "${STATE_DIR}/napcat-identity.env.tmp"
+        log "已删除 NapCat 身份文件"
+      fi
+    else
+      log "已保留 NapCat 身份文件（.installer/napcat-identity.env），如需删除请交互运行或手动删除"
+    fi
+  fi
+  rmdir "$STATE_DIR" 2>/dev/null || true
+  log "Docker 镜像未删除；如需清理可运行 docker image prune -a，或按需 docker rmi <镜像>"
+  log "卸载完成"
+  return 0
 }
 
 random_mac() {
@@ -241,9 +975,9 @@ parse_port_range() {
 
   validate_port port "$RANGE_START"
   validate_port port "$RANGE_END"
-  ((10#$RANGE_START <= 10#$RANGE_END)) || die "port range start must not exceed its end"
+  ((10#$RANGE_START <= 10#$RANGE_END)) || die "端口范围起始值不能大于结束值"
   ((10#$RANGE_END - 10#$RANGE_START < 100)) || \
-    die "a single managed port range may contain at most 100 ports"
+    die "单个托管端口范围最多包含 100 个端口"
 }
 
 port_ranges_overlap() {
@@ -281,7 +1015,7 @@ choose_botshepherd_env_file() {
   done
 
   ((${#candidates[@]} > 0)) || \
-    die "no BotShepherd installer environment found; first install an AstrBot or NoneBot route with BotShepherd enabled"
+    die "未找到 BotShepherd 安装环境；请先安装启用 BotShepherd 的 AstrBot 或 NoneBot 路线"
 
   if ((${#candidates[@]} == 1)); then
     MANAGED_ENV_FILE="${candidates[0]}"
@@ -377,7 +1111,7 @@ apply_botshepherd_port_mappings() {
 
   write_botshepherd_ports_override
   "${compose[@]}" config --quiet
-  log "recreating only nag-botshepherd to apply port mappings"
+  log "仅重建 nag-botshepherd 以应用端口映射"
   "${compose[@]}" up -d --no-deps --force-recreate botshepherd
 }
 
@@ -392,7 +1126,7 @@ add_botshepherd_port_mapping() {
   bind_ip="${bind_ip:-127.0.0.1}"
   case "$bind_ip" in
     127.0.0.1|0.0.0.0) ;;
-    *) die "binding address must be 127.0.0.1 or 0.0.0.0" ;;
+    *) die "绑定地址必须是 127.0.0.1 或 0.0.0.0" ;;
   esac
   if [[ "$bind_ip" == "0.0.0.0" ]]; then
     warn "此映射将监听所有网络接口；请同时配置防火墙或安全组"
@@ -418,7 +1152,7 @@ add_botshepherd_port_mapping() {
     reserved_name="${reserved_name%%|*}"
     [[ -n "$reserved_port" ]] || continue
     if port_ranges_overlap "$port_spec" "$reserved_port"; then
-      die "$port_spec conflicts with the ${reserved_name} host port ${reserved_port}"
+      die "$port_spec 与 ${reserved_name} 的宿主机端口 ${reserved_port} 冲突"
     fi
   done
 
@@ -426,7 +1160,7 @@ add_botshepherd_port_mapping() {
     while IFS='|' read -r existing_bind existing_spec; do
       [[ -n "$existing_spec" ]] || continue
       if port_ranges_overlap "$port_spec" "$existing_spec"; then
-        die "$port_spec overlaps an existing managed mapping: ${existing_bind}:${existing_spec}"
+        die "$port_spec 与已有托管映射重叠：${existing_bind}:${existing_spec}"
       fi
     done <"$BOTSHEPHERD_PORTS_STATE"
   fi
@@ -476,19 +1210,19 @@ remove_botshepherd_port_mapping() {
   mv -f "$temporary" "$BOTSHEPHERD_PORTS_STATE"
   chmod 600 "$BOTSHEPHERD_PORTS_STATE"
   apply_botshepherd_port_mappings
-  log "port mapping removed"
+  log "端口映射已移除"
 }
 
 manage_botshepherd_ports() {
   local action
 
-  [[ -t 0 ]] || die "BotShepherd port management requires an interactive terminal"
+  [[ -t 0 ]] || die "BotShepherd 端口管理需要交互式终端"
   (( ! DRY_RUN )) || die "--dry-run is not supported with botshepherd-ports mode"
-  command -v "$DOCKER_BIN" >/dev/null 2>&1 || die "Docker is not installed"
-  "$DOCKER_BIN" compose version >/dev/null 2>&1 || die "Docker Compose V2 is required"
-  "$DOCKER_BIN" info >/dev/null 2>&1 || die "cannot access the Docker daemon"
+  command -v "$DOCKER_BIN" >/dev/null 2>&1 || die "未安装 Docker"
+  "$DOCKER_BIN" compose version >/dev/null 2>&1 || die "需要 Docker Compose V2"
+  "$DOCKER_BIN" info >/dev/null 2>&1 || die "无法连接 Docker 守护进程"
   "$DOCKER_BIN" inspect nag-botshepherd >/dev/null 2>&1 || \
-    die "nag-botshepherd does not exist; first install an AstrBot or NoneBot route with BotShepherd enabled"
+    die "nag-botshepherd 容器不存在；请先安装启用 BotShepherd 的 AstrBot 或 NoneBot 路线"
 
   choose_botshepherd_env_file
   BOTSHEPHERD_PORTS_STATE="${STATE_DIR}/botshepherd-ports.list"
@@ -525,6 +1259,7 @@ install_qqofficial() {
   local data_root
   local bind_ip
   local gscore_port
+  local prev_gscore_port
   local qq_app_id
   local qq_app_secret
   local qq_token
@@ -552,6 +1287,8 @@ install_qqofficial() {
   (( ! USE_BOTSHEPHERD )) || \
     die "--botshepherd is not used by QQ Official routes"
 
+  preflight_environment
+
   if [[ "$route_kind" == "nonebot" ]]; then
     route_label="QQ 官方机器人 + NoneBot QQ 官方适配器 + GsCore"
     env_file="${STATE_DIR}/qqofficial-nonebot.env"
@@ -566,9 +1303,10 @@ install_qqofficial() {
   bind_ip="${input_bind_ip:-$(env_value BIND_IP "$env_file" || true)}"
   bind_ip="${bind_ip:-127.0.0.1}"
   bind_ip="$(prompt_value "WebUI 绑定地址" "$bind_ip")"
-  gscore_port="${input_gscore_port:-$(env_value GSCORE_PORT "$env_file" || true)}"
+  prev_gscore_port="$(env_value GSCORE_PORT "$env_file" || true)"
+  gscore_port="${input_gscore_port:-$prev_gscore_port}"
   gscore_port="${gscore_port:-8765}"
-  gscore_port="$(prompt_value "GsCore WebUI 端口" "$gscore_port")"
+  gscore_port="$(prompt_port "GsCore WebUI 端口" "$gscore_port" "$prev_gscore_port" "$bind_ip")"
 
   qq_app_id="${input_app_id:-$(env_value QQ_APP_ID "$env_file" || true)}"
   qq_app_secret="${input_app_secret:-$(env_value QQ_APP_SECRET "$env_file" || true)}"
@@ -583,19 +1321,19 @@ install_qqofficial() {
     fi
   else
     qq_app_id="$(prompt_value "QQ 官方机器人 AppID" "$qq_app_id")"
-    qq_app_secret="$(prompt_value "QQ 官方机器人 AppSecret" "$qq_app_secret")"
+    qq_app_secret="$(prompt_secret "QQ 官方机器人 AppSecret" "$qq_app_secret")"
     if [[ "$route_kind" == "nonebot" ]]; then
-      qq_token="$(prompt_value "QQ 官方机器人 Token" "$qq_token")"
+      qq_token="$(prompt_secret "QQ 官方机器人 Token" "$qq_token")"
     fi
   fi
 
   [[ -n "$qq_app_id" ]] || \
-    die "QQ_APP_ID is required (set it in the environment for --yes mode)"
+    die "缺少 QQ_APP_ID（--yes 模式请通过环境变量提供）"
   [[ -n "$qq_app_secret" ]] || \
-    die "QQ_APP_SECRET is required (set it in the environment for --yes mode)"
+    die "缺少 QQ_APP_SECRET（--yes 模式请通过环境变量提供）"
   if [[ "$route_kind" == "nonebot" ]]; then
     [[ -n "$qq_token" ]] || \
-      die "QQ_TOKEN is required by the NoneBot QQ adapter"
+      die "NoneBot QQ 适配器需要 QQ_TOKEN"
   fi
 
   if (( ! ASSUME_YES )); then
@@ -622,22 +1360,22 @@ install_qqofficial() {
     qq_api_base="https://api.sgroup.qq.com"
   fi
 
-  [[ "$data_root" == /* ]] || die "DATA_ROOT must be an absolute path"
+  [[ "$data_root" == /* ]] || die "DATA_ROOT 必须是绝对路径"
   case "$bind_ip" in
     127.0.0.1|0.0.0.0) ;;
-    *) die "BIND_IP must be 127.0.0.1 or 0.0.0.0" ;;
+    *) die "BIND_IP 必须是 127.0.0.1 或 0.0.0.0" ;;
   esac
   validate_port GSCORE_PORT "$gscore_port"
   [[ "$qq_app_id" =~ ^[A-Za-z0-9._~-]+$ ]] || \
-    die "QQ_APP_ID contains unsupported characters"
+    die "QQ_APP_ID 含不支持的字符"
   [[ "$qq_app_secret" =~ ^[A-Za-z0-9._~-]+$ ]] || \
-    die "QQ_APP_SECRET contains unsupported characters"
+    die "QQ_APP_SECRET 含不支持的字符"
   if [[ -n "$qq_token" && ! "$qq_token" =~ ^[A-Za-z0-9._~-]+$ ]]; then
-    die "QQ_TOKEN contains unsupported characters"
+    die "QQ_TOKEN 含不支持的字符"
   fi
   if [[ -n "$qq_admin_ids" \
     && ! "$qq_admin_ids" =~ ^[A-Za-z0-9._~-]+(,[A-Za-z0-9._~-]+)*$ ]]; then
-    die "QQ_ADMIN_IDS must contain comma-separated OpenIDs"
+    die "QQ_ADMIN_IDS 必须是英文逗号分隔的 OpenID"
   fi
 
   if prompt_yes_no "安装鸣潮插件套件（XutheringWavesUID、RoverSign、ScoreEcho）" y; then
@@ -653,7 +1391,7 @@ install_qqofficial() {
   fi
 
   if ((INSTALL_WUWA)) \
-    && prompt_yes_no "使用 CNB 镜像克隆鸣潮插件（适合 GitHub 访问较慢时）" n; then
+    && prompt_yes_no "使用 CNB 镜像克隆鸣潮插件（适合 GitHub 访问较慢时）" "$(cnb_mirror_default)"; then
     XUTHERINGWAVESUID_REPO="https://cnb.cool/gscore-mirror/XutheringWavesUID"
     ROVERSIGN_REPO="https://cnb.cool/gscore-mirror/RoverSign"
     SCOREECHO_REPO="https://cnb.cool/gscore-mirror/ScoreEcho"
@@ -665,7 +1403,7 @@ install_qqofficial() {
 
   gscore_ws_token="$(env_value GSCORE_WS_TOKEN "$env_file" || true)"
   if [[ -z "$gscore_ws_token" ]]; then
-    command -v od >/dev/null 2>&1 || die "od is required to generate GSCORE_WS_TOKEN"
+    command -v od >/dev/null 2>&1 || die "生成 GSCORE_WS_TOKEN 需要 od 命令"
     gscore_ws_token="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
   fi
 
@@ -695,18 +1433,13 @@ EOF
   fi
 
   if ((DRY_RUN)); then
-    log "dry-run completed; credentials were not written and the host was not changed"
+    log "dry-run 完成；未写入凭据，也未改动主机"
     return
   fi
   if ! prompt_yes_no "确认开始安装" y; then
-    log "installation cancelled"
+    log "已取消安装"
     return
   fi
-
-  command -v "$DOCKER_BIN" >/dev/null 2>&1 || die "Docker is not installed"
-  "$DOCKER_BIN" compose version >/dev/null 2>&1 || die "Docker Compose V2 is required"
-  "$DOCKER_BIN" info >/dev/null 2>&1 || \
-    die "cannot access the Docker daemon; check service status and user permissions"
 
   mkdir -p "$STATE_DIR"
   tmp_env="${env_file}.tmp"
@@ -731,7 +1464,7 @@ GSCORE_WS_TOKEN=$gscore_ws_token
 XUTHERINGWAVESUID_REPO=$XUTHERINGWAVESUID_REPO
 ROVERSIGN_REPO=$ROVERSIGN_REPO
 SCOREECHO_REPO=$SCOREECHO_REPO
-GSCORE_PYTHON_INDEX=https://pypi.org/simple/
+GSCORE_PYTHON_INDEX=$(gscore_python_index)
 UV_NO_CONFIG=0
 PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 GSCORE_XWUID_PYTHON_PACKAGES=playwright opencv-python fonttools pypinyin
@@ -748,13 +1481,13 @@ EOF
     data_dirs+=("$data_root/gscore-qqofficial")
   fi
   if ! mkdir -p "${data_dirs[@]}" 2>/dev/null; then
-    command -v sudo >/dev/null 2>&1 || die "cannot create $data_root and sudo is unavailable"
+    command -v sudo >/dev/null 2>&1 || die "无法创建 $data_root 且系统无 sudo"
     sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" "${data_dirs[@]}"
   fi
   if [[ "$route_kind" == "direct" ]]; then
     if ! chown 10001:10001 "$data_root/gscore-qqofficial" 2>/dev/null; then
       command -v sudo >/dev/null 2>&1 || \
-        die "cannot assign the gscore-qqofficial data directory to container UID 10001"
+        die "无法把 gscore-qqofficial 数据目录归属到容器 UID 10001"
       sudo chown 10001:10001 "$data_root/gscore-qqofficial"
     fi
     chmod 0700 "$data_root/gscore-qqofficial"
@@ -774,19 +1507,19 @@ EOF
     local finalize_attempt
 
     if ((INSTALL_WUWA || INSTALL_WUWA_DEPS)); then
-      log "stopping GsCore after the base services have started"
+      log "基础服务启动完成，先停止 GsCore 以初始化插件"
       official_compose stop gscore
     fi
     if ((INSTALL_WUWA)); then
-      log "cloning or updating the Wuthering Waves plugin suite"
+      log "克隆或更新鸣潮插件套件"
       official_compose --profile init run --rm gscore-plugin-init
     fi
     if ((INSTALL_WUWA_DEPS)); then
-      log "installing Wuthering Waves dependencies and Chromium"
+      log "安装鸣潮插件依赖与 Chromium"
       official_compose --profile init run --rm gscore-xwuid-deps-init
     fi
     if ((INSTALL_WUWA || INSTALL_WUWA_DEPS)); then
-      log "starting GsCore with the completed plugin environment"
+      log "以完成初始化的插件环境启动 GsCore"
       official_compose up -d gscore
       for ((finalize_attempt = 1; finalize_attempt <= 90; finalize_attempt++)); do
         if official_compose exec -T gscore /venv/bin/python -c \
@@ -797,22 +1530,22 @@ EOF
         sleep 2
       done
       official_compose logs --tail=120 gscore || true
-      die "GsCore WebUI did not become ready after plugin initialization"
+      die "插件初始化后 GsCore WebUI 未就绪"
     fi
   }
 
   official_compose config --quiet
-  log "pulling GsCore image"
+  log "拉取 GsCore 镜像"
   official_compose pull gscore
   if [[ "$route_kind" == "nonebot" ]]; then
-    log "building NoneBot with nonebot-adapter-qq 1.7.1"
+    log "构建 NoneBot（nonebot-adapter-qq 1.7.1）"
     official_compose build nonebot
   else
-    log "building gscore-qqofficial from pinned upstream commit"
+    log "从固定的上游 commit 构建 gscore-qqofficial"
     official_compose build gscore-qqofficial
   fi
 
-  log "starting GsCore"
+  log "启动 GsCore"
   official_compose up -d gscore
   for ((attempt = 1; attempt <= 60; attempt++)); do
     if official_compose exec -T gscore sh -c \
@@ -825,10 +1558,10 @@ EOF
   done
   if (( ! venv_ready )); then
     official_compose logs --tail=100 gscore || true
-    die "GsCore did not initialize within 120 seconds"
+    die "GsCore 120 秒内未完成初始化"
   fi
 
-  log "configuring GsCore WebSocket token and administrator OpenIDs"
+  log "配置 GsCore WebSocket token 与管理员 OpenID"
   official_compose exec -T gscore /venv/bin/python - \
     "$gscore_ws_token" "$qq_admin_ids" <<'PY'
 import json
@@ -846,7 +1579,7 @@ config_path.write_text(
 )
 PY
   official_compose restart gscore
-  log "waiting for the base GsCore WebUI"
+  log "等待基础 GsCore WebUI 就绪"
   for ((attempt = 1; attempt <= 90; attempt++)); do
     if official_compose exec -T gscore /venv/bin/python -c \
       'from urllib.request import urlopen; r=urlopen("http://127.0.0.1:8765/app/",timeout=3); assert r.status == 200' \
@@ -857,12 +1590,12 @@ PY
   done
   if ((attempt > 90)); then
     official_compose logs --tail=120 gscore || true
-    die "GsCore WebUI did not become ready after base configuration"
+    die "基础配置后 GsCore WebUI 未就绪"
   fi
 
   if [[ "$route_kind" == "nonebot" ]]; then
     official_compose stop gscore-qqofficial >/dev/null 2>&1 || true
-    log "starting NoneBot QQ Official adapter"
+    log "启动 NoneBot QQ 官方适配器"
     connection_check_since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     official_compose up -d --no-deps --force-recreate nonebot
     for ((attempt = 1; attempt <= 60; attempt++)); do
@@ -876,7 +1609,7 @@ PY
     done
     if (( ! nonebot_ready )); then
       official_compose logs --tail=120 nonebot || true
-      die "NoneBot QQ Official adapter did not become healthy within 120 seconds"
+      die "NoneBot QQ 官方适配器 120 秒内未达到健康状态"
     fi
     official_finalize_gscore_plugins
     for ((attempt = 1; attempt <= 60; attempt++)); do
@@ -897,21 +1630,21 @@ PY
       fi
       if [[ "$nonebot_logs" == *"code=11298"* \
         || "$nonebot_logs" == *"接口访问源IP不在白名单"* ]]; then
-        die "QQ rejected the server IP (11298). Add this server's public IP to the bot's IP whitelist, then rerun the installer."
+        die "QQ 拒绝了服务器 IP（11298）。请把本机公网 IP 加入机器人 IP 白名单后重跑安装器。"
       fi
       sleep 2
     done
     if (( ! qq_gateway_ready )); then
       official_compose logs --tail=120 nonebot || true
-      die "NoneBot started, but the QQ Official Gateway did not connect within 120 seconds"
+      die "NoneBot 已启动，但 120 秒内未连上 QQ 官方 Gateway"
     fi
     if (( ! gscore_adapter_ready )); then
       official_compose logs --tail=120 nonebot || true
-      die "NoneBot connected to QQ, but GenshinUID did not connect to GsCore within 120 seconds"
+      die "NoneBot 已连上 QQ，但 GenshinUID 120 秒内未连上 GsCore"
     fi
   else
     official_compose stop nonebot >/dev/null 2>&1 || true
-    log "starting gscore-qqofficial"
+    log "启动 gscore-qqofficial"
     connection_check_since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     official_compose up -d --no-deps --force-recreate gscore-qqofficial
     official_finalize_gscore_plugins
@@ -928,13 +1661,13 @@ PY
       fi
       if [[ "$adapter_logs" == *"11298"* \
         || "$adapter_logs" == *"接口访问源IP不在白名单"* ]]; then
-        die "QQ rejected the server IP (11298). Add this server's public IP to the bot's IP whitelist, then rerun the installer."
+        die "QQ 拒绝了服务器 IP（11298）。请把本机公网 IP 加入机器人 IP 白名单后重跑安装器。"
       fi
       sleep 2
     done
     if ((attempt > 60)); then
       official_compose logs --tail=100 gscore-qqofficial || true
-      die "gscore-qqofficial did not connect to both QQ Gateway and GsCore within 120 seconds"
+      die "gscore-qqofficial 120 秒内未同时连上 QQ Gateway 与 GsCore"
     fi
   fi
 
@@ -1163,8 +1896,10 @@ guided_validate_topology() {
 
 install_guided() {
   (( ! ASSUME_YES )) || \
-    die "guided mode requires interactive choices; use a legacy --mode preset for unattended installation"
-  [[ -t 0 ]] || die "guided mode requires an interactive terminal"
+    die "guided 模式需要交互选择；无人值守安装请使用传统 --mode 预设"
+  [[ -t 0 ]] || die "guided 模式需要交互式终端"
+
+  preflight_environment
 
   local env_file="${STATE_DIR}/guided.env"
   local state_file="${STATE_DIR}/guided.state"
@@ -1532,7 +2267,7 @@ EOF
   if ((edit_shared_settings)); then
     data_root="$(prompt_value "持久化数据目录" "$data_root")"
     bind_ip="$(prompt_value "WebUI 绑定地址" "$bind_ip")"
-    gscore_port="$(prompt_value "GsCore WebUI 端口" "$gscore_port")"
+    gscore_port="$(prompt_port "GsCore WebUI 端口" "$gscore_port" "$old_gscore_port" "$bind_ip")"
   fi
 
   local personal_added=0
@@ -1576,11 +2311,7 @@ EOF
     fi
 
     if ((! existing_state || personal_added || edit_shared_settings)); then
-      napcat_port="$(
-        prompt_value \
-          "NapCat WebUI 端口" \
-          "$napcat_port"
-      )"
+      napcat_port="$(prompt_port "NapCat WebUI 端口" "$napcat_port" "$old_napcat_port" "$bind_ip")"
     fi
     napcat_port="${napcat_port:-6099}"
     if ((! existing_state || personal_added || edit_shared_settings)); then
@@ -1602,21 +2333,13 @@ EOF
 
   if ((enable_astrbot)); then
     if ((! existing_state || astrbot_added || edit_shared_settings)); then
-      astrbot_port="$(
-        prompt_value \
-          "AstrBot WebUI 端口" \
-          "$astrbot_port"
-      )"
+      astrbot_port="$(prompt_port "AstrBot WebUI 端口" "$astrbot_port" "$old_astrbot_port" "$bind_ip")"
     fi
     astrbot_port="${astrbot_port:-6185}"
   fi
   if ((use_botshepherd)); then
     if ((! existing_state || botshepherd_added || edit_shared_settings)); then
-      botshepherd_port="$(
-        prompt_value \
-          "BotShepherd WebUI 端口" \
-          "$botshepherd_port"
-      )"
+      botshepherd_port="$(prompt_port "BotShepherd WebUI 端口" "$botshepherd_port" "$old_botshepherd_port" "$bind_ip")"
     fi
     botshepherd_port="${botshepherd_port:-5111}"
   fi
@@ -1625,9 +2348,9 @@ EOF
     if ((! existing_state || official_added || edit_shared_settings)) \
       || [[ "$official_adapter" != "$old_official_adapter" ]]; then
       qq_app_id="$(prompt_value "QQ 官方机器人 AppID" "$qq_app_id")"
-      qq_app_secret="$(prompt_value "QQ 官方机器人 AppSecret" "$qq_app_secret")"
+      qq_app_secret="$(prompt_secret "QQ 官方机器人 AppSecret" "$qq_app_secret")"
       if [[ "$official_adapter" == "nonebot" ]]; then
-        qq_token="$(prompt_value "QQ 官方机器人 Token" "$qq_token")"
+        qq_token="$(prompt_secret "QQ 官方机器人 Token" "$qq_token")"
       fi
     fi
     [[ -n "$qq_app_id" && -n "$qq_app_secret" ]] || \
@@ -1656,10 +2379,10 @@ EOF
     fi
   fi
 
-  [[ "$data_root" == /* ]] || die "DATA_ROOT must be an absolute path"
+  [[ "$data_root" == /* ]] || die "DATA_ROOT 必须是绝对路径"
   case "$bind_ip" in
     127.0.0.1|0.0.0.0) ;;
-    *) die "BIND_IP must be 127.0.0.1 or 0.0.0.0" ;;
+    *) die "BIND_IP 必须是 127.0.0.1 或 0.0.0.0" ;;
   esac
   validate_port GSCORE_PORT "$gscore_port"
   (( ! use_personal )) || validate_port NAPCAT_WEBUI_PORT "$napcat_port"
@@ -1693,7 +2416,7 @@ EOF
     INSTALL_WUWA_DEPS=0
   fi
   if ((INSTALL_WUWA)) \
-    && prompt_yes_no "使用 CNB 镜像克隆鸣潮插件" n; then
+    && prompt_yes_no "使用 CNB 镜像克隆鸣潮插件" "$(cnb_mirror_default)"; then
     XUTHERINGWAVESUID_REPO="https://cnb.cool/gscore-mirror/XutheringWavesUID"
     ROVERSIGN_REPO="https://cnb.cool/gscore-mirror/RoverSign"
     SCOREECHO_REPO="https://cnb.cool/gscore-mirror/ScoreEcho"
@@ -1882,27 +2605,24 @@ EOF
     warn "AstrBot 与 NoneBot 会同时收到普通 OneBot 消息；请避免安装功能重叠的普通插件"
   fi
   if ((DRY_RUN)); then
-    log "guided dry-run completed; no credentials or files were written"
+    log "guided dry-run 完成；未写入任何凭据或文件"
     return
   fi
   prompt_yes_no "确认开始安装" y || {
-    log "installation cancelled"
+    log "已取消安装"
     return
   }
 
-  command -v "$DOCKER_BIN" >/dev/null 2>&1 || die "Docker is not installed"
-  "$DOCKER_BIN" compose version >/dev/null 2>&1 || die "Docker Compose V2 is required"
-  "$DOCKER_BIN" info >/dev/null 2>&1 || die "cannot access the Docker daemon"
   if ((use_personal)); then
     case "$(uname -m)" in
       x86_64|amd64|aarch64|arm64) ;;
-      *) warn "the current architecture ($(uname -m)) is not listed by the NapCat Docker image" ;;
+      *) warn "NapCat Docker 镜像未声明支持当前架构（$(uname -m)）" ;;
     esac
   fi
   if ((use_botshepherd)); then
     case "$(uname -m)" in
       x86_64|amd64) ;;
-      *) die "the published BotShepherd image currently supports linux/amd64 only" ;;
+      *) die "BotShepherd 官方镜像目前仅支持 linux/amd64" ;;
     esac
   fi
   mkdir -p "$STATE_DIR"
@@ -1983,7 +2703,7 @@ ASTRBOT_GSCORE_ADAPTER_REPO=https://github.com/KimigaiiWuyi/astrbot_plugin_gscor
 XUTHERINGWAVESUID_REPO=$XUTHERINGWAVESUID_REPO
 ROVERSIGN_REPO=$ROVERSIGN_REPO
 SCOREECHO_REPO=$SCOREECHO_REPO
-GSCORE_PYTHON_INDEX=https://pypi.org/simple/
+GSCORE_PYTHON_INDEX=$(gscore_python_index)
 UV_NO_CONFIG=0
 PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 GSCORE_XWUID_PYTHON_PACKAGES=playwright opencv-python fonttools pypinyin
@@ -2022,7 +2742,7 @@ EOF
     data_dirs+=("$data_root/botshepherd/config")
   fi
   if ! mkdir -p "${data_dirs[@]}" 2>/dev/null; then
-    command -v sudo >/dev/null 2>&1 || die "cannot create $data_root"
+    command -v sudo >/dev/null 2>&1 || die "无法创建 $data_root"
     sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" "${data_dirs[@]}"
   fi
   if ((enable_official_direct)); then
@@ -2064,50 +2784,50 @@ EOF
   ((enable_official_direct)) || stop_services+=(gscore-qqofficial)
   ((use_botshepherd)) || stop_services+=(botshepherd)
   if ((${#stop_services[@]})); then
-    log "stopping components that are not part of the selected topology"
+    log "停止不属于所选拓扑的组件"
     guided_compose stop "${stop_services[@]}" >/dev/null 2>&1 || true
   fi
 
   if ((force_reconcile)) || ! guided_service_exists gscore; then
-    log "pulling the shared GsCore image"
+    log "拉取共享 GsCore 镜像"
     guided_compose pull gscore
   fi
   if ((use_personal)) \
     && { ((force_reconcile || personal_added || napcat_image_changed)) \
       || ! guided_service_exists napcat; }; then
-    log "pulling the selected NapCat image"
+    log "拉取所选 NapCat 镜像"
     guided_compose pull napcat
   fi
   if ((enable_astrbot)) \
     && { ((force_reconcile || astrbot_added)) \
       || ! guided_service_exists astrbot; }; then
-    log "pulling the AstrBot image"
+    log "拉取 AstrBot 镜像"
     guided_compose pull astrbot
   fi
   if ((use_botshepherd)) \
     && { ((force_reconcile || botshepherd_added)) \
       || ! guided_service_exists botshepherd; }; then
-    log "pulling the BotShepherd image"
+    log "拉取 BotShepherd 镜像"
     guided_compose pull botshepherd
   fi
   if ((enable_nonebot || enable_official_nonebot)) \
     && { ((force_reconcile || nonebot_added || official_changed)) \
       || { ((enable_nonebot)) && ! guided_service_exists nonebot; } \
       || { ((enable_official_nonebot)) && ! guided_service_exists nonebot-qqofficial; }; }; then
-    log "building the shared NoneBot image"
+    log "构建共享 NoneBot 镜像"
     guided_compose build nonebot
   fi
   if ((enable_official_direct)) \
     && { ((force_reconcile || official_changed)) \
       || ! guided_service_exists gscore-qqofficial; }; then
-    log "building gscore-qqofficial from pinned upstream commit"
+    log "从固定的上游 commit 构建 gscore-qqofficial"
     guided_compose build gscore-qqofficial
   fi
 
   local apply_started_at
   apply_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   local gscore_restarted=0
-  log "ensuring the shared GsCore is running"
+  log "确保共享 GsCore 正在运行"
   guided_compose up -d gscore
   local attempt
   local venv_ready=0
@@ -2120,7 +2840,7 @@ EOF
     fi
     sleep 2
   done
-  ((venv_ready)) || die "GsCore did not initialize within 120 seconds"
+  ((venv_ready)) || die "GsCore 120 秒内未完成初始化"
 
   local combined_masters=""
   if ((use_personal)); then
@@ -2154,13 +2874,13 @@ print("1" if changed else "0", end="")
 PY
   )"
   if [[ "$gscore_config_changed" == "1" ]] || ((repair_mode)); then
-    log "restarting GsCore to apply configuration"
+    log "重启 GsCore 以应用配置"
     guided_compose restart gscore
     gscore_restarted=1
   else
-    log "GsCore configuration is unchanged; keeping the current process"
+    log "GsCore 配置无变化；保持当前进程"
   fi
-  log "waiting for the base GsCore WebUI"
+  log "等待基础 GsCore WebUI 就绪"
   for ((attempt = 1; attempt <= 90; attempt++)); do
     if guided_compose exec -T gscore /venv/bin/python -c \
       'from urllib.request import urlopen; r=urlopen("http://127.0.0.1:8765/app/",timeout=3); assert r.status == 200' \
@@ -2169,7 +2889,7 @@ PY
     fi
     sleep 2
   done
-  ((attempt <= 90)) || die "GsCore WebUI did not become ready"
+  ((attempt <= 90)) || die "GsCore WebUI 未就绪"
 
   local personal_adapter_reconfigure=0
   local astrbot_reconfigure=0
@@ -2188,10 +2908,10 @@ PY
 
   if ((use_personal && personal_adapter_reconfigure)); then
     if [[ "$personal_adapter" == "napcat" ]]; then
-      log "enabling and configuring the NapCat GScore adapter"
+      log "启用并配置 NapCat GScore 适配器"
       guided_compose --profile init run --rm napcat-gscore-adapter-init
     else
-      log "disabling the NapCat GScore adapter to prevent duplicate replies"
+      log "停用 NapCat GScore 适配器以避免重复回复"
       guided_compose --profile init run --rm napcat-gscore-adapter-disable
     fi
   fi
@@ -2212,7 +2932,7 @@ PY
       fi
       sleep 2
     done
-    ((attempt <= 60)) || die "AstrBot did not create cmd_config.json"
+    ((attempt <= 60)) || die "AstrBot 未创建 cmd_config.json"
     guided_compose stop astrbot
     guided_compose --profile init run --rm astrbot-onebot-init
   fi
@@ -2250,25 +2970,25 @@ PY
   if ((use_personal)); then
     guided_compose up -d napcat
     if ((napcat_reconfigure && old_use_personal && ! napcat_runtime_changed)); then
-      log "restarting NapCat once to load the updated OneBot configuration"
+      log "重启一次 NapCat 以加载更新后的 OneBot 配置"
       guided_compose restart napcat
     fi
   fi
 
   if ((INSTALL_WUWA || INSTALL_WUWA_DEPS)); then
-    log "stopping GsCore after the selected base services have started"
+    log "所选基础服务启动完成，先停止 GsCore 以初始化插件"
     guided_compose stop gscore
   fi
   if ((INSTALL_WUWA)); then
-    log "cloning or updating the Wuthering Waves plugin suite"
+    log "克隆或更新鸣潮插件套件"
     guided_compose --profile init run --rm gscore-plugin-init
   fi
   if ((INSTALL_WUWA_DEPS)); then
-    log "installing Wuthering Waves dependencies and Chromium"
+    log "安装鸣潮插件依赖与 Chromium"
     guided_compose --profile init run --rm gscore-xwuid-deps-init
   fi
   if ((INSTALL_WUWA || INSTALL_WUWA_DEPS)); then
-    log "starting GsCore with the completed plugin environment"
+    log "以完成初始化的插件环境启动 GsCore"
     guided_compose up -d gscore
     gscore_restarted=1
     for ((attempt = 1; attempt <= 90; attempt++)); do
@@ -2281,7 +3001,7 @@ PY
     done
     if ((attempt > 90)); then
       guided_compose logs --tail=120 gscore || true
-      die "GsCore WebUI did not become ready after plugin initialization"
+      die "插件初始化后 GsCore WebUI 未就绪"
     fi
   fi
 
@@ -2289,7 +3009,7 @@ PY
   local astrbot_initial_password=""
   local botshepherd_initial_password=""
   if ((use_personal)); then
-    log "waiting for the NapCat WebUI token"
+    log "等待 NapCat WebUI Token"
     for ((attempt = 1; attempt <= 60; attempt++)); do
       napcat_webui_token="$(
         guided_compose logs --no-color napcat 2>/dev/null \
@@ -2303,7 +3023,7 @@ PY
       warn "NapCat 已启动，但 120 秒内没有从日志读取到 WebUI Token"
   fi
   if ((enable_astrbot)); then
-    log "waiting for the AstrBot initial WebUI password"
+    log "等待 AstrBot 初始 WebUI 密码"
     local astrbot_password_attempts=1
     ((astrbot_added || ! existing_state || repair_mode)) \
       && astrbot_password_attempts=60
@@ -2347,14 +3067,14 @@ PY
         break
       fi
       if [[ "$direct_logs" == *"11298"* ]]; then
-        die "QQ rejected the server IP (11298); add it to the bot IP whitelist"
+        die "QQ 拒绝了服务器 IP（11298）；请将其加入机器人 IP 白名单"
       fi
       sleep 2
     done
-    ((attempt <= 60)) || die "gscore-qqofficial did not complete both connections"
+    ((attempt <= 60)) || die "gscore-qqofficial 未完成两条连接"
   elif ((enable_official_direct)); then
     guided_service_running gscore-qqofficial \
-      || die "gscore-qqofficial is not running"
+      || die "gscore-qqofficial 未在运行"
   fi
   if ((enable_official_nonebot && (official_reconfigure || gscore_restarted))); then
     for ((attempt = 1; attempt <= 60; attempt++)); do
@@ -2369,14 +3089,14 @@ PY
         break
       fi
       if [[ "$official_nb_logs" == *"code=11298"* ]]; then
-        die "QQ rejected the server IP (11298); add it to the bot IP whitelist"
+        die "QQ 拒绝了服务器 IP（11298）；请将其加入机器人 IP 白名单"
       fi
       sleep 2
     done
-    ((attempt <= 60)) || die "QQ Official NoneBot did not complete both connections"
+    ((attempt <= 60)) || die "QQ 官方 NoneBot 未完成两条连接"
   elif ((enable_official_nonebot)); then
     guided_service_running nonebot-qqofficial \
-      || die "QQ Official NoneBot is not running"
+      || die "QQ 官方 NoneBot 未在运行"
   fi
 
   local register_code
@@ -2428,6 +3148,16 @@ EOF
 }
 
 choose_mode
+
+if [[ "$MODE" == "status" ]]; then
+  status_mode
+  exit 0
+fi
+
+if [[ "$MODE" == "uninstall" ]]; then
+  uninstall_mode
+  exit 0
+fi
 
 if [[ "$MODE" == "botshepherd-ports" ]]; then
   manage_botshepherd_ports
@@ -2505,9 +3235,11 @@ case "$MODE" in
     FRAMEWORK_KIND="nonebot"
     ;;
   *)
-    die "unsupported mode: $MODE (expected astrbot, hybrid, napcat, nonebot, or nonebot-napcat)"
+    die "不支持的模式：$MODE（可用：astrbot、hybrid、napcat、nonebot、nonebot-napcat）"
     ;;
 esac
+
+preflight_environment
 
 if [[ "$FRAMEWORK_KIND" == "none" ]]; then
   (( ! USE_BOTSHEPHERD )) || \
@@ -2579,21 +3311,21 @@ if [[ -n "$NAPCAT_ACCOUNT" \
 fi
 
 BIND_IP="$(prompt_value "WebUI 绑定地址" "$(env_default BIND_IP "127.0.0.1")")"
-GSCORE_PORT="$(prompt_value "GsCore WebUI 端口" "$(env_default GSCORE_PORT "8765")")"
-NAPCAT_WEBUI_PORT="$(prompt_value "NapCat WebUI 端口" "$(env_default NAPCAT_WEBUI_PORT "6099")")"
+GSCORE_PORT="$(prompt_port "GsCore WebUI 端口" "$(env_default GSCORE_PORT "8765")" "$(env_value GSCORE_PORT "$ENV_FILE" || true)" "$BIND_IP")"
+NAPCAT_WEBUI_PORT="$(prompt_port "NapCat WebUI 端口" "$(env_default NAPCAT_WEBUI_PORT "6099")" "$(env_value NAPCAT_WEBUI_PORT "$ENV_FILE" || true)" "$BIND_IP")"
 ASTRBOT_WEBUI_PORT="$(env_default ASTRBOT_WEBUI_PORT "6185")"
 BOTSHEPHERD_WEBUI_PORT="$(env_default BOTSHEPHERD_WEBUI_PORT "5111")"
 if [[ "$FRAMEWORK_KIND" == "astrbot" ]]; then
-  ASTRBOT_WEBUI_PORT="$(prompt_value "AstrBot WebUI 端口" "$ASTRBOT_WEBUI_PORT")"
+  ASTRBOT_WEBUI_PORT="$(prompt_port "AstrBot WebUI 端口" "$ASTRBOT_WEBUI_PORT" "$(env_value ASTRBOT_WEBUI_PORT "$ENV_FILE" || true)" "$BIND_IP")"
 fi
 if ((USE_BOTSHEPHERD)); then
-  BOTSHEPHERD_WEBUI_PORT="$(prompt_value "BotShepherd WebUI 端口" "$BOTSHEPHERD_WEBUI_PORT")"
+  BOTSHEPHERD_WEBUI_PORT="$(prompt_port "BotShepherd WebUI 端口" "$BOTSHEPHERD_WEBUI_PORT" "$(env_value BOTSHEPHERD_WEBUI_PORT "$ENV_FILE" || true)" "$BIND_IP")"
 fi
 
-[[ "$DATA_ROOT" == /* ]] || die "DATA_ROOT must be an absolute path"
+[[ "$DATA_ROOT" == /* ]] || die "DATA_ROOT 必须是绝对路径"
 case "$BIND_IP" in
   127.0.0.1|0.0.0.0) ;;
-  *) die "BIND_IP must be 127.0.0.1 or 0.0.0.0" ;;
+  *) die "BIND_IP 必须是 127.0.0.1 或 0.0.0.0" ;;
 esac
 validate_port GSCORE_PORT "$GSCORE_PORT"
 validate_port NAPCAT_WEBUI_PORT "$NAPCAT_WEBUI_PORT"
@@ -2603,18 +3335,18 @@ fi
 if ((USE_BOTSHEPHERD)); then
   validate_port BOTSHEPHERD_WEBUI_PORT "$BOTSHEPHERD_WEBUI_PORT"
 fi
-[[ "$GSCORE_PORT" != "$NAPCAT_WEBUI_PORT" ]] || die "GsCore and NapCat ports must differ"
+[[ "$GSCORE_PORT" != "$NAPCAT_WEBUI_PORT" ]] || die "GsCore 与 NapCat 端口不能相同"
 if [[ "$FRAMEWORK_KIND" == "astrbot" ]]; then
   [[ "$GSCORE_PORT" != "$ASTRBOT_WEBUI_PORT" && "$NAPCAT_WEBUI_PORT" != "$ASTRBOT_WEBUI_PORT" ]] || \
-    die "all WebUI ports must differ"
+    die "所有 WebUI 端口必须互不相同"
 fi
 if ((USE_BOTSHEPHERD)); then
   [[ "$BOTSHEPHERD_WEBUI_PORT" != "$GSCORE_PORT" \
     && "$BOTSHEPHERD_WEBUI_PORT" != "$NAPCAT_WEBUI_PORT" ]] || \
-    die "all WebUI ports must differ"
+    die "所有 WebUI 端口必须互不相同"
   if [[ "$FRAMEWORK_KIND" == "astrbot" ]]; then
     [[ "$BOTSHEPHERD_WEBUI_PORT" != "$ASTRBOT_WEBUI_PORT" ]] || \
-      die "all WebUI ports must differ"
+      die "所有 WebUI 端口必须互不相同"
   fi
 fi
 
@@ -2642,7 +3374,7 @@ else
   INSTALL_WUWA_DEPS=0
 fi
 
-if ((INSTALL_WUWA)) && prompt_yes_no "使用 CNB 镜像克隆鸣潮插件（适合 GitHub 访问较慢时）" n; then
+if ((INSTALL_WUWA)) && prompt_yes_no "使用 CNB 镜像克隆鸣潮插件（适合 GitHub 访问较慢时）" "$(cnb_mirror_default)"; then
   USE_CNB_MIRRORS=1
   XUTHERINGWAVESUID_REPO="https://cnb.cool/gscore-mirror/XutheringWavesUID"
   ROVERSIGN_REPO="https://cnb.cool/gscore-mirror/RoverSign"
@@ -2661,11 +3393,11 @@ fi
 
 GSCORE_WS_TOKEN="$(env_default GSCORE_WS_TOKEN "")"
 if [[ -z "$GSCORE_WS_TOKEN" ]]; then
-  command -v od >/dev/null 2>&1 || die "od is required to generate GSCORE_WS_TOKEN"
+  command -v od >/dev/null 2>&1 || die "生成 GSCORE_WS_TOKEN 需要 od 命令"
   GSCORE_WS_TOKEN="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
 fi
 [[ "$GSCORE_WS_TOKEN" =~ ^[A-Za-z0-9._~-]+$ ]] || \
-  die "GSCORE_WS_TOKEN may only contain letters, numbers, dot, underscore, tilde, and hyphen"
+  die "GSCORE_WS_TOKEN 只能包含字母、数字、点、下划线、波浪线和连字符"
 
 for pair in \
   "DATA_ROOT=$DATA_ROOT" "BIND_IP=$BIND_IP" \
@@ -2734,27 +3466,23 @@ EOF
 
 print_summary
 if ((DRY_RUN)); then
-  log "dry-run completed; no files, containers, or directories were changed"
+  log "dry-run 完成；未改动任何文件、容器或目录"
   exit 0
 fi
 
 if ! prompt_yes_no "确认开始安装" y; then
-  log "installation cancelled"
+  log "已取消安装"
   exit 0
 fi
 
-command -v "$DOCKER_BIN" >/dev/null 2>&1 || die "Docker is not installed"
-"$DOCKER_BIN" compose version >/dev/null 2>&1 || die "Docker Compose V2 is required"
-"$DOCKER_BIN" info >/dev/null 2>&1 || die "cannot access the Docker daemon; check service status and user permissions"
-
 case "$(uname -m)" in
   x86_64|amd64|aarch64|arm64) ;;
-  *) warn "the current architecture ($(uname -m)) is not listed by the NapCat Docker image" ;;
+  *) warn "NapCat Docker 镜像未声明支持当前架构（$(uname -m)）" ;;
 esac
 if ((USE_BOTSHEPHERD)); then
   case "$(uname -m)" in
     x86_64|amd64) ;;
-    *) die "the published BotShepherd image currently supports linux/amd64 only" ;;
+    *) die "BotShepherd 官方镜像目前仅支持 linux/amd64" ;;
   esac
 fi
 
@@ -2796,7 +3524,7 @@ ASTRBOT_GSCORE_ADAPTER_REPO=https://github.com/KimigaiiWuyi/astrbot_plugin_gscor
 XUTHERINGWAVESUID_REPO=$XUTHERINGWAVESUID_REPO
 ROVERSIGN_REPO=$ROVERSIGN_REPO
 SCOREECHO_REPO=$SCOREECHO_REPO
-GSCORE_PYTHON_INDEX=https://pypi.org/simple/
+GSCORE_PYTHON_INDEX=$(gscore_python_index)
 GSCORE_WS_TOKEN=$GSCORE_WS_TOKEN
 UV_NO_CONFIG=0
 PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
@@ -2828,18 +3556,18 @@ if ((USE_BOTSHEPHERD)); then
 fi
 
 if ! mkdir -p "${DATA_DIRS[@]}" 2>/dev/null; then
-  command -v sudo >/dev/null 2>&1 || die "cannot create $DATA_ROOT and sudo is unavailable"
+  command -v sudo >/dev/null 2>&1 || die "无法创建 $DATA_ROOT 且系统无 sudo"
   log "需要 sudo 创建数据目录"
   sudo install -d -m 0755 -o "$NAPCAT_UID" -g "$NAPCAT_GID" "${DATA_DIRS[@]}"
 fi
 
 for data_dir in "${DATA_DIRS[@]}"; do
-  [[ -w "$data_dir" ]] || die "$data_dir is not writable by UID $NAPCAT_UID; fix its ownership or permissions"
+  [[ -w "$data_dir" ]] || die "$data_dir 对 UID $NAPCAT_UID 不可写；请修正属主或权限"
 done
 
 if [[ "$ADAPTER_KIND" == "napcat" && "$FRAMEWORK_KIND" == "astrbot" \
   && -e "$DATA_ROOT/astrbot/plugins/astrbot_plugin_gscore_adapter" ]]; then
-  warn "AstrBot GScore adapter already exists in persistent data. Disable it before using the NapCat adapter to avoid duplicate handling."
+  warn "持久化数据中已存在 AstrBot GScore 适配器；使用 NapCat 适配器前请先停用它，避免重复处理"
 fi
 
 COMPOSE=("$DOCKER_BIN" compose --project-directory "$PROJECT_DIR" --env-file "$tmp_env" -p "$PROJECT_NAME")
@@ -2862,7 +3590,7 @@ wait_gscore_ready() {
   local stage="$1"
   local attempt
 
-  log "waiting for GsCore WebUI (${stage})"
+  log "等待 GsCore WebUI 就绪（${stage}）"
   for ((attempt = 1; attempt <= 90; attempt++)); do
     if compose exec -T gscore /venv/bin/python -c \
       'from urllib.request import urlopen; response = urlopen("http://127.0.0.1:8765/app/", timeout=3); assert response.status == 200' \
@@ -2873,7 +3601,7 @@ wait_gscore_ready() {
   done
 
   compose logs --tail=100 gscore || true
-  die "GsCore WebUI did not become ready within 180 seconds (${stage})"
+  die "GsCore WebUI 180 秒内未就绪（${stage}）"
 }
 
 wait_napcat_webui_token() {
@@ -2920,7 +3648,7 @@ wait_astrbot_initial_password() {
 wait_astrbot_config() {
   local attempt
 
-  log "waiting for AstrBot to create cmd_config.json"
+  log "等待 AstrBot 创建 cmd_config.json"
   for ((attempt = 1; attempt <= 60; attempt++)); do
     if compose exec -T astrbot sh -c 'test -s /AstrBot/data/cmd_config.json' \
       >/dev/null 2>&1; then
@@ -2930,13 +3658,13 @@ wait_astrbot_config() {
   done
 
   compose logs --tail=100 astrbot || true
-  die "AstrBot did not create data/cmd_config.json within 120 seconds"
+  die "AstrBot 120 秒内未创建 data/cmd_config.json"
 }
 
 wait_astrbot_onebot_listener() {
   local attempt
 
-  log "waiting for the AstrBot OneBot v11 listener on port 6199"
+  log "等待 AstrBot OneBot v11 监听（端口 6199）"
   for ((attempt = 1; attempt <= 60; attempt++)); do
     if compose exec -T astrbot python -c \
       'import socket; connection = socket.create_connection(("127.0.0.1", 6199), timeout=3); connection.close()' \
@@ -2947,13 +3675,13 @@ wait_astrbot_onebot_listener() {
   done
 
   compose logs --tail=100 astrbot || true
-  die "AstrBot OneBot v11 listener did not become ready on port 6199 within 120 seconds"
+  die "AstrBot OneBot v11 监听 120 秒内未在端口 6199 就绪"
 }
 
 wait_nonebot_ready() {
   local attempt
 
-  log "waiting for the NoneBot OneBot v11 listener on port 8080"
+  log "等待 NoneBot OneBot v11 监听（端口 8080）"
   for ((attempt = 1; attempt <= 60; attempt++)); do
     if compose exec -T nonebot python -c \
       'import socket; connection = socket.create_connection(("127.0.0.1", 8080), timeout=3); connection.close()' \
@@ -2964,13 +3692,13 @@ wait_nonebot_ready() {
   done
 
   compose logs --tail=100 nonebot || true
-  die "NoneBot did not become ready on port 8080 within 120 seconds"
+  die "NoneBot 120 秒内未在端口 8080 就绪"
 }
 
 wait_botshepherd_ready() {
   local attempt
 
-  log "waiting for BotShepherd WebUI and OneBot listener"
+  log "等待 BotShepherd WebUI 与 OneBot 监听"
   for ((attempt = 1; attempt <= 60; attempt++)); do
     if compose exec -T botshepherd python -c '
 from urllib.request import urlopen
@@ -2987,7 +3715,7 @@ connection.close()
   done
 
   compose logs --tail=100 botshepherd || true
-  die "BotShepherd did not become ready within 120 seconds"
+  die "BotShepherd 120 秒内未就绪"
 }
 
 wait_botshepherd_initial_password() {
@@ -3029,25 +3757,25 @@ if [[ "$ADAPTER_KIND" == "napcat" ]]; then
     in_napcat && /^    image:/ {sub(/^    image:[[:space:]]*/, ""); print; exit}
   ')"
   [[ "$resolved_napcat_image" == "$NAPCAT_COMPAT_IMAGE" ]] || \
-    die "NapCat adapter mode resolved to unsafe image: ${resolved_napcat_image:-unknown}"
+    die "NapCat 适配器模式解析到不安全的镜像：${resolved_napcat_image:-unknown}"
 fi
 
-log "pulling runtime images"
+log "拉取运行时镜像"
 if [[ "$FRAMEWORK_KIND" == "nonebot" ]]; then
   compose pull gscore napcat
   if ((USE_BOTSHEPHERD)); then
     compose pull botshepherd
   fi
-  log "building the NoneBot image"
+  log "构建 NoneBot 镜像"
   compose build nonebot
 else
   compose pull
 fi
 
-log "starting GsCore"
+log "启动 GsCore"
 compose up -d gscore
 
-log "waiting for the persistent GsCore Python environment"
+log "等待 GsCore 持久化 Python 环境"
 venv_ready=0
 for ((attempt = 1; attempt <= 60; attempt++)); do
   if compose exec -T gscore sh -c \
@@ -3059,12 +3787,12 @@ for ((attempt = 1; attempt <= 60; attempt++)); do
 done
 if (( ! venv_ready )); then
   compose logs --tail=100 gscore || true
-  die "GsCore did not create /venv/bin/python and data/config.json within 120 seconds"
+  die "GsCore 120 秒内未创建 /venv/bin/python 与 data/config.json"
 fi
 
 wait_gscore_ready "before configuring the WebSocket token"
 
-log "configuring the GsCore WebSocket token and master accounts"
+log "配置 GsCore WebSocket token 与主人账号"
 compose exec -T gscore /venv/bin/python - "$GSCORE_WS_TOKEN" "$NAPCAT_MASTER_QQ" <<'PY'
 import json
 import sys
@@ -3085,23 +3813,23 @@ wait_gscore_ready "after configuring the WebSocket token"
 
 case "$ADAPTER_KIND" in
   astrbot)
-    log "installing the AstrBot GScore adapter"
+    log "安装 AstrBot GScore 适配器"
     compose --profile init run --rm astrbot-plugin-init
     ;;
   napcat)
-    log "installing the NapCat GScore adapter"
+    log "安装 NapCat GScore 适配器"
     compose --profile init run --rm napcat-gscore-adapter-init
     ;;
   nonebot)
-    log "disabling the NapCat GScore adapter to prevent duplicate replies"
+    log "停用 NapCat GScore 适配器以避免重复回复"
     compose --profile init run --rm napcat-gscore-adapter-disable
     ;;
 esac
 
 if [[ "$FRAMEWORK_KIND" == "nonebot" ]]; then
-  log "configuring the NapCat reverse WebSocket client for NoneBot"
+  log "配置 NapCat 反向 WebSocket 客户端（连接 NoneBot）"
   compose --profile init run --rm nonebot-onebot-init
-  log "starting NoneBot"
+  log "启动 NoneBot"
   compose up -d nonebot
   wait_nonebot_ready
   if ((USE_BOTSHEPHERD)); then
@@ -3110,13 +3838,13 @@ if [[ "$FRAMEWORK_KIND" == "nonebot" ]]; then
   fi
   compose up -d napcat
 else
-  log "starting selected services"
+  log "启动所选服务"
   compose up -d
 fi
 
 if [[ "$FRAMEWORK_KIND" == "astrbot" ]]; then
   wait_astrbot_config
-  log "configuring the AstrBot OneBot v11 platform and NapCat reverse WebSocket client"
+  log "配置 AstrBot OneBot v11 平台与 NapCat 反向 WebSocket 客户端"
   if ((USE_BOTSHEPHERD)); then
     compose stop napcat botshepherd astrbot
   else
@@ -3133,51 +3861,51 @@ if [[ "$FRAMEWORK_KIND" == "astrbot" ]]; then
 fi
 
 if ((INSTALL_WUWA || INSTALL_WUWA_DEPS)); then
-  log "stopping GsCore after the selected base services have started"
+  log "所选基础服务启动完成，先停止 GsCore 以初始化插件"
   compose stop gscore
 fi
 
 if ((INSTALL_WUWA)); then
-  log "cloning or updating the Wuthering Waves plugin suite"
+  log "克隆或更新鸣潮插件套件"
   compose --profile init run --rm gscore-plugin-init
 fi
 
 if ((INSTALL_WUWA_DEPS)); then
-  log "installing Wuthering Waves extra dependencies and Chromium"
+  log "安装鸣潮插件额外依赖与 Chromium"
   compose --profile init run --rm gscore-xwuid-deps-init
 fi
 
 if ((INSTALL_WUWA || INSTALL_WUWA_DEPS)); then
-  log "starting GsCore with the completed plugin environment"
+  log "以完成初始化的插件环境启动 GsCore"
   compose up -d gscore
   wait_gscore_ready "after installing plugins and dependencies"
 fi
 
 GSCORE_REGISTER_CODE=""
 if ! GSCORE_REGISTER_CODE="$(read_gscore_register_code)" || [[ -z "$GSCORE_REGISTER_CODE" ]]; then
-  warn "GsCore started, but REGISTER_CODE could not be read from data/config.json"
+  warn "GsCore 已启动，但无法从 data/config.json 读取 REGISTER_CODE"
   GSCORE_REGISTER_CODE=""
 fi
 
 NAPCAT_WEBUI_TOKEN=""
-log "waiting for the NapCat WebUI token"
+log "等待 NapCat WebUI Token"
 if ! NAPCAT_WEBUI_TOKEN="$(wait_napcat_webui_token)"; then
-  warn "NapCat started, but its WebUI token was not found in logs within 120 seconds"
+  warn "NapCat 已启动，但 120 秒内未在日志中找到 WebUI Token"
 fi
 
 ASTRBOT_INITIAL_PASSWORD=""
 if [[ "$FRAMEWORK_KIND" == "astrbot" ]]; then
-  log "waiting for the AstrBot initial WebUI password"
+  log "等待 AstrBot 初始 WebUI 密码"
   if ! ASTRBOT_INITIAL_PASSWORD="$(wait_astrbot_initial_password)"; then
-    warn "AstrBot started, but no initial WebUI password was found in its current logs; this is expected when reusing existing AstrBot data"
+    warn "AstrBot 已启动，但当前日志中没有初始 WebUI 密码；复用已有 AstrBot 数据时属正常现象"
   fi
 fi
 
 BOTSHEPHERD_INITIAL_PASSWORD=""
 if ((USE_BOTSHEPHERD)); then
-  log "waiting for the BotShepherd initial WebUI password"
+  log "等待 BotShepherd 初始 WebUI 密码"
   if ! BOTSHEPHERD_INITIAL_PASSWORD="$(wait_botshepherd_initial_password)"; then
-    warn "BotShepherd started, but no initial WebUI password was found in its current logs; this is expected when reusing existing BotShepherd data"
+    warn "BotShepherd 已启动，但当前日志中没有初始 WebUI 密码；复用已有 BotShepherd 数据时属正常现象"
   fi
 fi
 compose ps
