@@ -111,6 +111,14 @@ services:
         }
         EOF
           echo "Created AstrBot GScore adapter config for gscore:8765."
+        elif [ -s "$$config" ] && [ -n "$$GSCORE_WS_TOKEN" ]; then
+          apk add --no-cache jq >/dev/null
+          if [ "$$(jq -r '.WS_TOKEN // ""' "$$config")" != "$$GSCORE_WS_TOKEN" ]; then
+            jq --arg token "$$GSCORE_WS_TOKEN" '.WS_TOKEN = $$token' \
+              "$$config" >"$$config.tmp"
+            mv "$$config.tmp" "$$config"
+            echo "Synced the AstrBot GScore adapter WS_TOKEN with the shared token."
+          fi
         fi
     volumes:
       - ${DATA_ROOT:-/opt/nag-data}/astrbot:/AstrBot/data

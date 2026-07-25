@@ -6,6 +6,14 @@ services:
       file: docker-compose.nonebot.yml
       service: gscore
     container_name: nag-qqofficial-gscore
+    # The extended definitions default to /opt/nag-data; restate the bind
+    # mounts so every service in this file shares the /opt/nag-qqofficial-data
+    # default when DATA_ROOT is unset.
+    volumes:
+      - ${DATA_ROOT:-/opt/nag-qqofficial-data}/gscore/data:/gsuid_core/data
+      - ${DATA_ROOT:-/opt/nag-qqofficial-data}/gscore/plugins:/gsuid_core/gsuid_core/plugins
+      - gscore-venv:/venv
+      - gscore-playwright:/ms-playwright
 
   nonebot:
     extends:
@@ -21,6 +29,9 @@ services:
       QQ_APP_SECRET: ${QQ_APP_SECRET:?Set QQ_APP_SECRET in the private installer environment}
       QQ_TOKEN: ${QQ_TOKEN:-}
       QQ_IS_SANDBOX: ${QQ_IS_SANDBOX:-false}
+    volumes:
+      - ${DATA_ROOT:-/opt/nag-qqofficial-data}/nonebot/data:/app/data
+      - ${DATA_ROOT:-/opt/nag-qqofficial-data}/nonebot/plugins:/app/plugins
 
   gscore-qqofficial:
     image: ${GSCORE_QQOFFICIAL_IMAGE:-nag-gscore-qqofficial:0.7.0-2d582f6}
@@ -59,12 +70,19 @@ services:
       file: docker-compose.nonebot.yml
       service: gscore-xwuid-deps-init
     container_name: nag-qqofficial-gscore-xwuid-deps-init
+    volumes:
+      - ${DATA_ROOT:-/opt/nag-qqofficial-data}/gscore/data:/gsuid_core/data
+      - ${DATA_ROOT:-/opt/nag-qqofficial-data}/gscore/plugins:/gsuid_core/gsuid_core/plugins
+      - gscore-venv:/venv
+      - gscore-playwright:/ms-playwright
 
   gscore-plugin-init:
     extends:
       file: docker-compose.nonebot.yml
       service: gscore-plugin-init
     container_name: nag-qqofficial-gscore-plugin-init
+    volumes:
+      - ${DATA_ROOT:-/opt/nag-qqofficial-data}/gscore/plugins:/plugins
 
 networks:
   nag-net:

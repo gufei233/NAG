@@ -4,7 +4,8 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
 readonly STATE_DIR="${NAG_INSTALL_STATE_DIR:-${SCRIPT_DIR}/.installer}"
 readonly DOCKER_BIN="${NAG_DOCKER_BIN:-docker}"
 readonly NAPCAT_COMPAT_IMAGE="mlikiowa/napcat-docker:v4.18.5"
@@ -116,12 +117,19 @@ while (($# > 0)); do
 done
 
 choose_mode() {
-  if [[ -n "$MODE" ]]; then
-    return
+  if [[ -z "$MODE" ]]; then
+    [[ -t 0 ]] || die "no interactive terminal; pass --mode and optionally --yes"
+    MODE="guided"
   fi
 
-  [[ -t 0 ]] || die "no interactive terminal; pass --mode and optionally --yes"
-  MODE="guided"
+  case "$MODE" in
+    guided|botshepherd-ports) ;;
+    *)
+      if (( ! ASSUME_YES )) && [[ ! -t 0 ]]; then
+        die "mode '$MODE' prompts for input without --yes; add --yes (plus any required options or environment variables) for unattended installation"
+      fi
+      ;;
+  esac
 }
 
 prompt_value() {
@@ -298,7 +306,7 @@ choose_botshepherd_env_file() {
 
 write_botshepherd_ports_override() {
   local temporary="${BOTSHEPHERD_PORTS_OVERRIDE}.tmp"
-  local entry bind_ip port_spec
+  local bind_ip port_spec
 
   if [[ -s "$BOTSHEPHERD_PORTS_STATE" ]]; then
     {
@@ -728,8 +736,7 @@ UV_NO_CONFIG=0
 PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 GSCORE_XWUID_PYTHON_PACKAGES=playwright opencv-python fonttools pypinyin
 EOF
-  mv -f "$tmp_env" "$env_file"
-  chmod 600 "$env_file"
+  chmod 600 "$tmp_env"
 
   local data_dirs=(
     "$data_root/gscore/data"
@@ -756,7 +763,7 @@ EOF
   local official_compose_cmd=(
     "$DOCKER_BIN" compose
     --project-directory "$SCRIPT_DIR"
-    --env-file "$env_file"
+    --env-file "$tmp_env"
     -p nag-qqofficial
     -f "${SCRIPT_DIR}/docker-compose.qqofficial.yml"
   )
@@ -940,6 +947,9 @@ print(config.get("REGISTER_CODE", ""), end="")
 ' 2>/dev/null || true
   )"
   official_compose ps
+  # Deployment succeeded; only now replace the previous private environment.
+  mv -f "$tmp_env" "$env_file"
+  chmod 600 "$env_file"
 
   cat <<EOF
 
@@ -1161,7 +1171,6 @@ install_guided() {
   local identity_file="${STATE_DIR}/napcat-identity.env"
   local topology_file="$env_file"
   local existing_state=0
-  local incremental_mode=0
   local repair_mode=0
   local full_reconfigure=0
   local old_use_personal=0
@@ -1170,8 +1179,6 @@ install_guided() {
   local old_official_adapter="none"
   local old_enable_astrbot=0
   local old_enable_nonebot=0
-  local old_enable_official_nonebot=0
-  local old_enable_official_direct=0
   local old_use_botshepherd=0
   local old_data_root=""
   local old_bind_ip=""
@@ -1187,7 +1194,6 @@ install_guided() {
   local old_qq_token=""
   local old_qq_admin_ids=""
   local old_qq_is_sandbox="false"
-  local old_gscore_ws_token=""
   local old_napcat_image=""
 
   [[ -f "$state_file" ]] && topology_file="$state_file"
@@ -1208,7 +1214,6 @@ install_guided() {
     old_qq_admin_ids="$(env_value QQ_ADMIN_IDS "$env_file" || true)"
     old_qq_is_sandbox="$(env_value QQ_IS_SANDBOX "$env_file" || true)"
     old_qq_is_sandbox="${old_qq_is_sandbox:-false}"
-    old_gscore_ws_token="$(env_value GSCORE_WS_TOKEN "$env_file" || true)"
     old_napcat_image="$(env_value NAPCAT_IMAGE "$env_file" || true)"
 
     old_use_personal="$(env_value USE_PERSONAL "$topology_file" || true)"
@@ -1267,10 +1272,6 @@ install_guided() {
     elif [[ "$old_use_official" != "1" ]]; then
       old_official_adapter="none"
     fi
-    [[ "$old_official_adapter" == "nonebot" ]] \
-      && old_enable_official_nonebot=1 || old_enable_official_nonebot=0
-    [[ "$old_official_adapter" == "direct" ]] \
-      && old_enable_official_direct=1 || old_enable_official_direct=0
   fi
 
   local use_personal=0
@@ -1306,7 +1307,6 @@ EOF
   fi
 
   if [[ "$topology_action" == "1" ]]; then
-    incremental_mode=1
     use_personal="$old_use_personal"
     use_official="$old_use_official"
     personal_adapter="$old_personal_adapter"
@@ -2016,6 +2016,10 @@ EOF
       "$data_root/botshepherd/data"
       "$data_root/botshepherd/logs"
     )
+  elif ((use_personal)); then
+    # guided-onebot-init always bind-mounts this path; pre-create it so Docker
+    # does not leave a root-owned directory behind.
+    data_dirs+=("$data_root/botshepherd/config")
   fi
   if ! mkdir -p "${data_dirs[@]}" 2>/dev/null; then
     command -v sudo >/dev/null 2>&1 || die "cannot create $data_root"
@@ -2036,6 +2040,10 @@ EOF
   )
   if ((fixed_mac)); then
     guided_compose_cmd+=(-f "${SCRIPT_DIR}/docker-compose.mac.example.yml")
+  fi
+  if ((use_botshepherd)) \
+    && [[ -f "${STATE_DIR}/docker-compose.botshepherd-ports.yml" ]]; then
+    guided_compose_cmd+=(-f "${STATE_DIR}/docker-compose.botshepherd-ports.yml")
   fi
   guided_compose() {
     "${guided_compose_cmd[@]}" "$@"
@@ -2759,8 +2767,7 @@ cat >"$tmp_identity" <<EOF
 NAPCAT_MAC=$NAPCAT_MAC
 NAPCAT_ACCOUNT=$NAPCAT_ACCOUNT
 EOF
-mv -f "$tmp_identity" "$NAPCAT_IDENTITY_FILE"
-chmod 600 "$NAPCAT_IDENTITY_FILE"
+chmod 600 "$tmp_identity"
 
 tmp_env="${ENV_FILE}.tmp"
 cat >"$tmp_env" <<EOF
@@ -2795,8 +2802,7 @@ UV_NO_CONFIG=0
 PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 GSCORE_XWUID_PYTHON_PACKAGES=playwright opencv-python fonttools pypinyin
 EOF
-mv -f "$tmp_env" "$ENV_FILE"
-chmod 600 "$ENV_FILE"
+chmod 600 "$tmp_env"
 
 DATA_DIRS=(
   "$DATA_ROOT/gscore/data"
@@ -2836,7 +2842,7 @@ if [[ "$ADAPTER_KIND" == "napcat" && "$FRAMEWORK_KIND" == "astrbot" \
   warn "AstrBot GScore adapter already exists in persistent data. Disable it before using the NapCat adapter to avoid duplicate handling."
 fi
 
-COMPOSE=("$DOCKER_BIN" compose --project-directory "$PROJECT_DIR" --env-file "$ENV_FILE" -p "$PROJECT_NAME")
+COMPOSE=("$DOCKER_BIN" compose --project-directory "$PROJECT_DIR" --env-file "$tmp_env" -p "$PROJECT_NAME")
 for compose_file in "${COMPOSE_FILES[@]}"; do
   COMPOSE+=(-f "$compose_file")
 done
@@ -3175,6 +3181,18 @@ if ((USE_BOTSHEPHERD)); then
   fi
 fi
 compose ps
+
+# Deployment succeeded; only now replace the previous private environment and
+# shared NapCat identity, then point the printed status command at them.
+mv -f "$tmp_env" "$ENV_FILE"
+chmod 600 "$ENV_FILE"
+mv -f "$tmp_identity" "$NAPCAT_IDENTITY_FILE"
+chmod 600 "$NAPCAT_IDENTITY_FILE"
+for compose_index in "${!COMPOSE[@]}"; do
+  if [[ "${COMPOSE[compose_index]}" == "$tmp_env" ]]; then
+    COMPOSE[compose_index]="$ENV_FILE"
+  fi
+done
 
 cat <<EOF
 

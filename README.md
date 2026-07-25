@@ -222,7 +222,7 @@ QQ_APP_ID=xxx QQ_APP_SECRET=xxx bash install.sh --mode qqofficial-direct --yes -
 
 ### 方式二：传统手动 Docker Compose 部署
 
-先克隆仓库并选择路线。手动部署前请编辑对应的 `.env`；需要适配器自动初始化时，至少填写 `GSCORE_WS_TOKEN` 和 `NAPCAT_MASTER_QQ`，并确保 GsCore 使用相同的 WebSocket Token。
+先克隆仓库并选择路线。手动部署前请编辑对应的 `.env`：路线 4/5/6/7 的 Compose 文件要求 `GSCORE_WS_TOKEN` 非空，否则 `config`、`build`、`up` 都会直接中止；需要适配器自动初始化时，还应填写 `NAPCAT_MASTER_QQ`，并确保 GsCore 使用相同的 WebSocket Token。
 
 | 路线 | 组合 | GScore 处理方 | NapCat 版本 |
 | --- | --- | --- | --- |
@@ -326,6 +326,8 @@ docker restart ng-napcat
 docker compose ps
 ```
 
+`napcat-gscore-adapter-init` 需要 `NG/.env` 中的 `NAPCAT_GSCORE_ADAPTER_ZIP_URL` 指向插件 release zip 直链（NG 默认留空，该任务会打印提示后退出）。没有直链时可跳过这一步，改在 NapCat WebUI 手动安装插件，详见 `NG/README.md`。
+
 #### 路线 4：NoneBot GScore 适配器
 
 ```bash
@@ -357,9 +359,10 @@ docker compose -f docker-compose.nonebot.yml -f docker-compose.napcat-adapter.ym
 
 #### 路线 6：QQ 官方机器人 + NoneBot
 
-在私有 `.env` 中填写 `QQ_APP_ID`、`QQ_APP_SECRET`、`QQ_TOKEN` 和可选的 `QQ_ADMIN_IDS`，其中管理员必须填写 QQ 开放平台提供的 OpenID：
+在私有 `.env` 中填写 `QQ_APP_ID`、`QQ_APP_SECRET`、`QQ_TOKEN` 和可选的 `QQ_ADMIN_IDS`，其中管理员必须填写 QQ 开放平台提供的 OpenID。路线 6/7 使用独立数据目录，请同时把 `.env` 中的 `DATA_ROOT` 改为 `/opt/nag-qqofficial-data`（下面的 `sed` 已包含该步骤；删除该行则使用同名默认值）：
 
 ```bash
+sed -i 's|^DATA_ROOT=.*|DATA_ROOT=/opt/nag-qqofficial-data|' .env
 mkdir -p /opt/nag-qqofficial-data/{nonebot/data,nonebot/plugins,gscore/data,gscore/plugins}
 
 docker compose --env-file .env -f docker-compose.qqofficial.yml build nonebot
@@ -370,9 +373,10 @@ NoneBot 使用 WebSocket 连接 QQ 官方 Gateway，无需把 8080 端口映射�
 
 #### 路线 7：QQ 官方机器人轻量直连
 
-该路线只使用 `QQ_APP_ID` 和 `QQ_APP_SECRET`，`QQ_TOKEN` 不参与连接。上游 `gscore-qqofficial` 当前没有预构建镜像，Compose 会从核对过的固定提交构建：
+该路线只使用 `QQ_APP_ID` 和 `QQ_APP_SECRET`，`QQ_TOKEN` 不参与连接。与路线 6 相同，`.env` 需要 `DATA_ROOT=/opt/nag-qqofficial-data` 和非空的 `GSCORE_WS_TOKEN`。上游 `gscore-qqofficial` 当前没有预构建镜像，Compose 会从核对过的固定提交构建：
 
 ```bash
+sed -i 's|^DATA_ROOT=.*|DATA_ROOT=/opt/nag-qqofficial-data|' .env
 mkdir -p /opt/nag-qqofficial-data/{gscore/data,gscore/plugins,gscore-qqofficial}
 chown 10001:10001 /opt/nag-qqofficial-data/gscore-qqofficial
 
@@ -587,7 +591,7 @@ http://127.0.0.1:6185
 
 注意：这里不要填 `localhost`。在 Docker 容器中，`localhost` 指 AstrBot 容器自己，不是 GsCore 容器；同一 compose 网络内应使用服务名 `gscore`。
 
-通过 `install.sh` 选择 AstrBot 作为 GScore 处理方时，安装器会在首次安装时自动创建该插件配置，写入 `gscore:8765` 和与 GsCore 相同的共享 `WS_TOKEN`；token 也会保存在权限为 `600` 的管理环境文件中。已有 AstrBot 插件配置不会被覆盖。只要安装 AstrBot，脚本就会自动配置 OneBot 反向 WebSocket；启用 BotShepherd 时，NapCat 的目标会自动改为 `ws://botshepherd:2537/OneBotv11`。
+通过 `install.sh` 选择 AstrBot 作为 GScore 处理方时，安装器会在首次安装时自动创建该插件配置，写入 `gscore:8765` 和与 GsCore 相同的共享 `WS_TOKEN`；token 也会保存在权限为 `600` 的管理环境文件中。已有 AstrBot 插件配置不会被整体覆盖，但初始化任务会把其中的 `WS_TOKEN` 同步为当前共享 token。只要安装 AstrBot，脚本就会自动配置 OneBot 反向 WebSocket；启用 BotShepherd 时，NapCat 的目标会自动改为 `ws://botshepherd:2537/OneBotv11`。
 
 安装器会等待 GsCore WebUI 完全就绪后再执行配置和插件安装，避免在配置文件写入期间重启；NapCat 启动后还会从容器日志中提取并打印 WebUI Token 和带 Token 的登录地址。
 
