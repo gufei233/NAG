@@ -32,6 +32,7 @@ services:
     volumes:
       - ${DATA_ROOT:-/opt/nag-qqofficial-data}/nonebot/data:/app/data
       - ${DATA_ROOT:-/opt/nag-qqofficial-data}/nonebot/plugins:/app/plugins
+      - ${DATA_ROOT:-/opt/nag-qqofficial-data}/nonebot/site-packages:/app/site-packages
 
   gscore-qqofficial:
     image: ${GSCORE_QQOFFICIAL_IMAGE:-nag-gscore-qqofficial:0.7.0-2d582f6}

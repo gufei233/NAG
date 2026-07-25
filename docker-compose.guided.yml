@@ -42,11 +42,14 @@ services:
       QQ_APP_SECRET: ${QQ_APP_SECRET:-}
       QQ_TOKEN: ${QQ_TOKEN:-}
       QQ_IS_SANDBOX: ${QQ_IS_SANDBOX:-false}
+      NONEBOT_PYTHON_INDEX: ${NONEBOT_PYTHON_INDEX:-https://pypi.org/simple/}
+      NONEBOT_COMMAND_START: ${NONEBOT_COMMAND_START:-/}
     expose:
       - "8080"
     volumes:
       - ${DATA_ROOT:-/opt/nag-data}/nonebot-qqofficial/data:/app/data
       - ${DATA_ROOT:-/opt/nag-data}/nonebot-qqofficial/plugins:/app/plugins
+      - ${DATA_ROOT:-/opt/nag-data}/nonebot-qqofficial/site-packages:/app/site-packages
     depends_on:
       - gscore
     healthcheck:
@@ -76,6 +79,7 @@ services:
       - ${DATA_ROOT:-/opt/nag-data}/napcat/config:/app/napcat/config
       - ${DATA_ROOT:-/opt/nag-data}/napcat/plugins:/app/napcat/plugins
       - ${DATA_ROOT:-/opt/nag-data}/napcat/qq:/app/.config/QQ
+      - ${DATA_ROOT:-/opt/nag-data}/astrbot:/AstrBot/data
     networks:
       - nag-net
 

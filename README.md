@@ -544,6 +544,27 @@ ww下载全部资源
 
 `RoverSign` 依赖 `XutheringWavesUID` 及其数据库，建议先确认 `XutheringWavesUID` 正常工作。总排行 token、评分 OCR token 等插件业务配置，进入 GsCore WebUI 的对应插件配置页填写。
 
+## NoneBot 插件
+
+个人 NoneBot 与官方 NoneBot 共用镜像但插件目录相互独立，日常装插件不需要重建镜像。三种来源对应三种装法（装完 `docker restart` 对应容器生效）：
+
+| 插件来源 | 操作 |
+| --- | --- |
+| PyPI 上架插件 | 在插件目录的 `plugins.txt` 加一行包名，如 `nonebot-plugin-withdraw==0.5.0` |
+| GitHub 第三方（可 pip 安装） | `plugins.txt` 加一行 `git+https://... nonebot_plugin_xxx`（第二列为导入名） |
+| GitHub 第三方（源码仓库） | 直接 `git clone` 进插件目录，自动识别内层 `nonebot_plugin_*` 包 |
+| 补装插件未声明的依赖 | `plugins.txt` 加一行 `包名 -`（第二列写 `-` 表示只安装不作为插件加载） |
+
+插件目录位置：个人 NB 为 `$DATA_ROOT/nonebot/plugins/`，官方 NB 为 `$DATA_ROOT/nonebot-qqofficial/plugins/`；单文件插件（`xxx.py`）和含 `__init__.py` 的包目录也可直接放入。
+
+依赖处理：启动时汇总 `plugins.txt` 与各插件仓库的 `requirements.txt` / `pyproject.toml` 依赖声明，安装到挂载的 `site-packages` 持久目录（重建镜像不丢失）；声明未变化时跳过安装，日常启动零开销。核心包版本由镜像内 `constraints.txt` 锁定，插件依赖不会升级 nonebot2 与适配器。大陆网络下 `NONEBOT_PYTHON_INDEX` 会随安装器的网络模式自动指向国内 PyPI 镜像。依赖安装失败只影响对应插件并在日志给出提示，不会阻断机器人启动。
+
+需要编译型重依赖或希望依赖进镜像时，仍可使用传统方式：`nonebot/requirements.txt` 加包名、`nonebot/bot.py` 加 `nonebot.load_plugin(...)`，然后重跑 `bash install.sh` 重建（该方式对两个 NoneBot 实例同时生效）。
+
+注意：个人 NB 是 OneBot v11 适配器，官方 NB 是 adapter-qq——给官方实例装插件前先确认其支持 QQ 官方适配器；AstrBot 与个人 NB 同时收到普通消息，避免两边安装功能重叠的插件。
+
+NoneBot 命令前缀默认为 `/`，可通过私有环境文件中的 `NONEBOT_COMMAND_START` 修改（逗号分隔多个前缀，如 `#` 或 `#,/`；空串元素表示允许无前缀命令）。修改 `.installer` 私有 env 后重跑安装器即可生效，安装器重跑时会保留该设置。与 AstrBot 并存时建议 NB 使用不同前缀（如 `#`）以减少命令重叠。
+
 ## 首次配置顺序
 
 建议按这个顺序配置：GsCore -> AstrBot -> NapCat -> 联调。

@@ -46,11 +46,14 @@ services:
       GSUID_CORE_PORT: "8765"
       GSUID_CORE_BOTID: NoneBot2
       GSUID_CORE_WS_TOKEN: ${GSCORE_WS_TOKEN:?Set GSCORE_WS_TOKEN in .env}
+      NONEBOT_PYTHON_INDEX: ${NONEBOT_PYTHON_INDEX:-https://pypi.org/simple/}
+      NONEBOT_COMMAND_START: ${NONEBOT_COMMAND_START:-/}
     expose:
       - "8080"
     volumes:
       - ${DATA_ROOT:-/opt/nag-data}/nonebot/data:/app/data
       - ${DATA_ROOT:-/opt/nag-data}/nonebot/plugins:/app/plugins
+      - ${DATA_ROOT:-/opt/nag-data}/nonebot/site-packages:/app/site-packages
     depends_on:
       - gscore
     healthcheck:
