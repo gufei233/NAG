@@ -41,6 +41,8 @@ services:
       - "6199"
     volumes:
       - ${DATA_ROOT:-/opt/nag-data}/astrbot:/AstrBot/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - gscore
     networks:
