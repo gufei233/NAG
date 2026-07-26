@@ -233,7 +233,7 @@ bash install.sh --mode uninstall --target all --yes                      # 仅�
 bash install.sh --mode uninstall --target nag --yes --purge-data --purge-state
 ```
 
-`--target` 可选 `nag`（个人 QQ 的 guided/预设部署）、`ng`（NG 轻量部署）、`nag-qqofficial`（QQ 官方部署）或 `all`。卸载不会删除 Docker 镜像；`.installer/napcat-identity.env` 也默认保留——它保存固定 MAC，删除后重装会生成新 MAC，可能触发 QQ 设备风控，确要删除请在交互模式确认。
+`--target` 可选 `nag`（个人 QQ 的 guided/预设部署）、`ng`（NG 轻量部署）、`nag-qqofficial`（QQ 官方部署）或 `all`。卸载不会删除 Docker 镜像；`.installer/napcat-identity.env` 也默认保留——它保存固定 MAC，删除后重装会生成新 MAC，可能触发 QQ 设备风控，确要删除请在交互模式确认。安装器会在仅含 NAG 数据的专用根目录写入 `.nag-managed-data-root` 安全标记；`--purge-data` 只会删除经过规范化、避开系统关键目录、带有效标记且删除时仍仅含 NAG 顶层条目的路径。如果根目录已有其他顶层文件，安装可继续但不会获得删除标记；写入标记后再加入其他条目，卸载也会拒绝递归删除。旧版本部署缺少标记时，先重跑一次安装器再卸载，或自行核对后手动清理。
 
 固定路线预设仍支持无人值守安装或仅查看执行计划：
 
@@ -354,7 +354,7 @@ docker restart ng-napcat
 docker compose ps
 ```
 
-`napcat-gscore-adapter-init` 需要 `NG/.env` 中的 `NAPCAT_GSCORE_ADAPTER_ZIP_URL` 指向插件 release zip 直链（NG 默认留空，该任务会打印提示后退出）。没有直链时可跳过这一步，改在 NapCat WebUI 手动安装插件，详见 `NG/README.md`。
+`NG/.env.example` 已固定 `napcat-plugin-gscore-adapter` v1.3.3 的 release 地址与 SHA-256。初始化任务会先校验下载内容，在同一文件系统的临时目录解压，再原子替换旧插件；如需改用其他 release，必须同时更新 `NAPCAT_GSCORE_ADAPTER_ZIP_URL` 和 `NAPCAT_GSCORE_ADAPTER_SHA256`。也可以跳过该任务，改在 NapCat WebUI 手动安装，详见 `NG/README.md`。
 
 #### 路线 4：NoneBot GScore 适配器
 
@@ -557,7 +557,7 @@ ww下载全部资源
 
 插件目录位置：个人 NB 为 `$DATA_ROOT/nonebot/plugins/`，官方 NB 为 `$DATA_ROOT/nonebot-qqofficial/plugins/`；单文件插件（`xxx.py`）和含 `__init__.py` 的包目录也可直接放入。
 
-依赖处理：启动时汇总 `plugins.txt` 与各插件仓库的 `requirements.txt` / `pyproject.toml` 依赖声明，安装到挂载的 `site-packages` 持久目录（重建镜像不丢失）；声明未变化时跳过安装，日常启动零开销。核心包版本由镜像内 `constraints.txt` 锁定，插件依赖不会升级 nonebot2 与适配器。大陆网络下 `NONEBOT_PYTHON_INDEX` 会随安装器的网络模式自动指向国内 PyPI 镜像。依赖安装失败只影响对应插件并在日志给出提示，不会阻断机器人启动。
+依赖处理：启动时汇总 `plugins.txt` 与各插件仓库的 `requirements.txt` / `pyproject.toml` 依赖声明，安装到挂载的 `site-packages` 持久目录（重建镜像不丢失）；插件声明、镜像内 `constraints.txt` 和 Python 主次版本都未变化时跳过安装，日常启动零开销。核心包版本由镜像内约束锁定，插件依赖不会升级 nonebot2 与适配器；重建镜像导致约束或 Python 版本变化时会自动重新解析持久依赖。大陆网络下 `NONEBOT_PYTHON_INDEX` 会随安装器的网络模式自动指向国内 PyPI 镜像。依赖安装失败会在日志中提示并可能影响本批次发生依赖变化的目录插件，但不会阻断机器人主体启动。
 
 需要编译型重依赖或希望依赖进镜像时，仍可使用传统方式：`nonebot/requirements.txt` 加包名、`nonebot/bot.py` 加 `nonebot.load_plugin(...)`，然后重跑 `bash install.sh` 重建（该方式对两个 NoneBot 实例同时生效）。
 

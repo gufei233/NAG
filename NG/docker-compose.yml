@@ -56,7 +56,8 @@ services:
     profiles:
       - init
     environment:
-      NAPCAT_GSCORE_ADAPTER_ZIP_URL: ${NAPCAT_GSCORE_ADAPTER_ZIP_URL:-}
+      NAPCAT_GSCORE_ADAPTER_ZIP_URL: ${NAPCAT_GSCORE_ADAPTER_ZIP_URL:-https://github.com/xiowo/napcat-plugin-gscore-adapter/releases/download/v1.3.3/napcat-plugin-gscore-adapter.zip}
+      NAPCAT_GSCORE_ADAPTER_SHA256: ${NAPCAT_GSCORE_ADAPTER_SHA256:-1776762d0ed8d16ddb8228b98f599c5fa9d166c4a34df5bb0c8f1e2ddd2387ef}
       GSCORE_WS_TOKEN: ${GSCORE_WS_TOKEN:-}
       NAPCAT_MASTER_QQ: ${NAPCAT_MASTER_QQ:-}
       NAPCAT_UID: ${NAPCAT_UID:-1000}
@@ -67,21 +68,89 @@ services:
     command:
       - |
         set -eu
-        if [ -z "$$NAPCAT_GSCORE_ADAPTER_ZIP_URL" ]; then
-          echo "Set NAPCAT_GSCORE_ADAPTER_ZIP_URL in .env or install the plugin from NapCat WebUI."
-          exit 1
-        fi
-
         apk add --no-cache curl jq unzip
         target=/plugins/napcat-plugin-gscore-adapter
-        mkdir -p "$$target"
-        curl -fsSL "$$NAPCAT_GSCORE_ADAPTER_ZIP_URL" -o /tmp/napcat-plugin-gscore-adapter.zip
-        unzip -o /tmp/napcat-plugin-gscore-adapter.zip -d "$$target"
+        archive=/tmp/napcat-plugin-gscore-adapter.zip
+        staging="$$(mktemp -d /plugins/.napcat-plugin-gscore-adapter.new.XXXXXX)"
+        backup="$${staging}.backup"
+        had_target=0
+        swapped=0
+        config_file=
+        plugins_file=
+        config_backup=
+        plugins_backup=
+        had_config=0
+        had_plugins=0
+        config_prepared=0
+        plugins_prepared=0
+        cleanup() {
+          if [ "$$plugins_prepared" -eq 1 ]; then
+            rm -f "$$plugins_file" "$${plugins_file}.tmp"
+            if [ "$$had_plugins" -eq 1 ]; then
+              mv "$$plugins_backup" "$$plugins_file"
+            else
+              rm -f "$$plugins_backup"
+            fi
+          fi
+          if [ "$$config_prepared" -eq 1 ]; then
+            rm -f "$$config_file" "$${config_file}.tmp"
+            if [ "$$had_config" -eq 1 ]; then
+              mv "$$config_backup" "$$config_file"
+            else
+              rm -f "$$config_backup"
+            fi
+          fi
+          if [ "$$swapped" -eq 1 ]; then
+            rm -rf "$$target"
+            [ "$$had_target" -eq 0 ] || mv "$$backup" "$$target"
+          fi
+          rm -rf "$$staging" "$$backup"
+        }
+        trap cleanup EXIT INT TERM
+        case "$$NAPCAT_GSCORE_ADAPTER_SHA256" in
+          *[!0-9A-Fa-f]*|'')
+            echo "NAPCAT_GSCORE_ADAPTER_SHA256 must be a 64-character SHA-256." >&2
+            exit 1
+            ;;
+        esac
+        [ "$${#NAPCAT_GSCORE_ADAPTER_SHA256}" -eq 64 ] || {
+          echo "NAPCAT_GSCORE_ADAPTER_SHA256 must be a 64-character SHA-256." >&2
+          exit 1
+        }
+        curl -fsSL --retry 3 "$$NAPCAT_GSCORE_ADAPTER_ZIP_URL" -o "$$archive"
+        printf '%s  %s\n' "$$NAPCAT_GSCORE_ADAPTER_SHA256" "$$archive" \
+          | sha256sum -c -
+        unzip -q "$$archive" -d "$$staging"
+        [ -n "$$(find "$$staging" -mindepth 1 -maxdepth 1 -print -quit)" ] || {
+          echo "Downloaded plugin archive is empty." >&2
+          exit 1
+        }
+        if [ -e "$$target" ]; then
+          mv "$$target" "$$backup"
+          had_target=1
+        fi
+        if ! mv "$$staging" "$$target"; then
+          [ "$$had_target" -eq 0 ] || mv "$$backup" "$$target"
+          exit 1
+        fi
+        swapped=1
 
         config_dir=/config/plugins/napcat-plugin-gscore-adapter
         config_file="$$config_dir/config.json"
         plugins_file=/config/plugins.json
         mkdir -p "$$config_dir"
+        config_backup="$$(mktemp "$${config_file}.nag-backup.XXXXXX")"
+        if [ -e "$$config_file" ]; then
+          cp -p "$$config_file" "$$config_backup"
+          had_config=1
+        fi
+        config_prepared=1
+        plugins_backup="$$(mktemp "$${plugins_file}.nag-backup.XXXXXX")"
+        if [ -e "$$plugins_file" ]; then
+          cp -p "$$plugins_file" "$$plugins_backup"
+          had_plugins=1
+        fi
+        plugins_prepared=1
         [ -s "$$config_file" ] || printf '{}\n' >"$$config_file"
         jq \
           --arg url 'ws://gscore:8765' \
@@ -98,6 +167,13 @@ services:
 
         chown -R "$$NAPCAT_UID:$$NAPCAT_GID" "$$config_dir" "$$plugins_file" "$$target"
         chmod 600 "$$config_file" "$$plugins_file"
+        swapped=0
+        config_prepared=0
+        plugins_prepared=0
+        rm -rf "$$backup"
+        rm -f "$$config_backup" "$$plugins_backup" \
+          "$${config_file}.tmp" "$${plugins_file}.tmp"
+        trap - EXIT INT TERM
         echo "NapCat GScore adapter installed, enabled, and configured for ws://gscore:8765."
     volumes:
       - ${DATA_ROOT:-/opt/ng-data}/napcat/plugins:/plugins

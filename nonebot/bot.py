@@ -230,7 +230,16 @@ def _prune_shadowing_packages() -> None:
 
 
 def _ensure_dependencies(pip_specs: list[str], manifest: str) -> None:
-    digest = hashlib.sha256(manifest.encode("utf-8")).hexdigest()
+    runtime_fingerprint = "\n".join(
+        (
+            f"python:{sys.version_info.major}.{sys.version_info.minor}",
+            "constraints:",
+            _read_text(CONSTRAINTS_FILE),
+        )
+    )
+    digest = hashlib.sha256(
+        f"{manifest}\n{runtime_fingerprint}".encode("utf-8")
+    ).hexdigest()
     if os.path.isfile(DEPS_MARKER) and _read_text(DEPS_MARKER).strip() == digest:
         return
     if pip_specs:

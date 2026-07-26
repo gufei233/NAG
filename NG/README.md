@@ -148,6 +148,7 @@ docker restart ng-napcat
 
 ```env
 NAPCAT_GSCORE_ADAPTER_ZIP_URL=https://github.com/xiowo/napcat-plugin-gscore-adapter/releases/download/<tag>/<asset>.zip
+NAPCAT_GSCORE_ADAPTER_SHA256=<对应 release zip 的 64 位 SHA-256>
 ```
 
 然后运行一次可选初始化任务：
@@ -157,7 +158,7 @@ docker compose --profile init run --rm napcat-gscore-adapter-init
 docker restart ng-napcat
 ```
 
-由于 release 资产名称可能变化，默认不在 compose 中写死下载地址。
+仓库当前默认固定 v1.3.3 及其 GitHub 发布资产摘要。初始化任务会先校验 SHA-256，在插件卷内的临时目录解压，再原子替换旧目录；校验、解压或配置失败时会恢复此前版本。升级到其他 release 时必须同时修改下载地址和摘要。
 
 ## 配置插件连接 GsCore
 

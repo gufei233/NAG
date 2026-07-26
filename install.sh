@@ -10,9 +10,13 @@ readonly STATE_DIR="${NAG_INSTALL_STATE_DIR:-${SCRIPT_DIR}/.installer}"
 readonly PREFLIGHT_STATE_FILE="${STATE_DIR}/preflight.env"
 readonly DOCKER_BIN="${NAG_DOCKER_BIN:-docker}"
 readonly NAPCAT_COMPAT_IMAGE="mlikiowa/napcat-docker:v4.18.5"
-readonly NAPCAT_ADAPTER_LATEST_URL="https://github.com/xiowo/napcat-plugin-gscore-adapter/releases/latest/download/napcat-plugin-gscore-adapter.zip"
+readonly NAPCAT_ADAPTER_LEGACY_LATEST_URL="https://github.com/xiowo/napcat-plugin-gscore-adapter/releases/latest/download/napcat-plugin-gscore-adapter.zip"
+readonly NAPCAT_ADAPTER_PINNED_URL="https://github.com/xiowo/napcat-plugin-gscore-adapter/releases/download/v1.3.3/napcat-plugin-gscore-adapter.zip"
+readonly NAPCAT_ADAPTER_PINNED_SHA256="1776762d0ed8d16ddb8228b98f599c5fa9d166c4a34df5bb0c8f1e2ddd2387ef"
 readonly BOTSHEPHERD_IMAGE_DEFAULT="ghcr.io/gufei233/botshepherd:v1.2.1-docker.1"
 readonly GSCORE_QQOFFICIAL_COMMIT="2d582f6478a0c0d94aa31d7151c0acabce65ea21"
+readonly DATA_ROOT_MARKER_NAME=".nag-managed-data-root"
+readonly DATA_ROOT_MARKER_VALUE="NAG_DATA_ROOT_V1"
 
 MODE=""
 ASSUME_YES=0
@@ -239,6 +243,77 @@ validate_single_line() {
   local name="$1"
   local value="$2"
   [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || die "$name 不能包含换行"
+}
+
+normalize_data_root() {
+  local data_root="$1"
+
+  command -v realpath >/dev/null 2>&1 \
+    || die "安全处理 DATA_ROOT 需要 realpath 命令（通常由 coreutils 提供）"
+  realpath -m -- "$data_root"
+}
+
+data_root_is_critical() {
+  case "$1" in
+    /|/bin|/boot|/dev|/etc|/home|/lib|/lib64|/media|/mnt|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/var)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+validated_data_root() {
+  local data_root="$1"
+  local normalized
+
+  [[ "$data_root" == /* ]] || die "DATA_ROOT 必须是绝对路径"
+  normalized="$(normalize_data_root "$data_root")"
+  if data_root_is_critical "$normalized"; then
+    die "DATA_ROOT ${data_root} 解析为系统关键路径 ${normalized}，请使用专用子目录"
+  fi
+  printf '%s' "$normalized"
+}
+
+mark_data_root() {
+  local data_root="$1"
+  local normalized
+  local marker
+  local temporary
+  local entry
+  local name
+
+  normalized="$(normalize_data_root "$data_root")"
+  marker="${normalized}/${DATA_ROOT_MARKER_NAME}"
+  if [[ -e "$marker" ]]; then
+    if [[ -f "$marker" && ! -L "$marker" ]] \
+      && [[ "$(head -n 1 -- "$marker" 2>/dev/null || true)" == "$DATA_ROOT_MARKER_VALUE" ]]; then
+      return 0
+    fi
+    warn "数据目录中存在无效安全标记，拒绝覆盖：${marker}"
+    return 0
+  fi
+  for entry in "$normalized"/* "$normalized"/.[!.]* "$normalized"/..?*; do
+    [[ -e "$entry" || -L "$entry" ]] || continue
+    name="${entry##*/}"
+    case "$name" in
+      gscore|napcat|astrbot|nonebot|nonebot-qqofficial|gscore-qqofficial|botshepherd)
+        ;;
+      *)
+        warn "数据根目录 ${normalized} 含非 NAG 条目 ${name}，为避免误删不写入安全标记；安装可继续，但 --purge-data 将拒绝删除整个目录"
+        return 0
+        ;;
+    esac
+  done
+  temporary="$(mktemp)"
+  printf '%s\n' "$DATA_ROOT_MARKER_VALUE" >"$temporary"
+  if ! as_root install -m 0600 -o "$(id -u)" -g "$(id -g)" \
+    "$temporary" "$marker"; then
+    rm -f -- "$temporary"
+    die "无法写入数据目录安全标记：${marker}"
+  fi
+  rm -f -- "$temporary"
 }
 
 as_root() {
@@ -763,27 +838,48 @@ status_mode() {
 
 uninstall_data_dir() {
   local data_root="$1"
+  local normalized
+  local marker
   local purge=0
   local confirm
 
-  case "$data_root" in
-    /|/bin|/boot|/dev|/etc|/home|/lib|/lib64|/media|/mnt|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/var)
-      warn "数据目录 ${data_root} 是系统关键路径，跳过删除"
-      return 0
-      ;;
-  esac
-  if [[ "$data_root" != /* ]]; then
+  if ! normalized="$(normalize_data_root "$data_root")"; then
+    warn "无法规范化数据目录路径（${data_root}），跳过删除"
+    return 0
+  fi
+  if data_root_is_critical "$normalized"; then
+    warn "数据目录 ${data_root} 解析为系统关键路径 ${normalized}，跳过删除"
+    return 0
+  fi
+  if [[ "$normalized" != /* ]]; then
     warn "数据目录路径异常（${data_root}），跳过删除"
     return 0
   fi
-  if [[ ! -e "$data_root" ]]; then
+  if [[ ! -e "$normalized" ]]; then
     return 0
   fi
+  marker="${normalized}/${DATA_ROOT_MARKER_NAME}"
+  if [[ ! -f "$marker" || -L "$marker" ]] \
+    || [[ "$(head -n 1 -- "$marker" 2>/dev/null || true)" != "$DATA_ROOT_MARKER_VALUE" ]]; then
+    warn "数据目录 ${normalized} 缺少有效的 NAG 安全标记，拒绝递归删除；可先重跑安装器生成标记，或确认后手动清理"
+    return 0
+  fi
+  for entry in "$normalized"/* "$normalized"/.[!.]* "$normalized"/..?*; do
+    [[ -e "$entry" || -L "$entry" ]] || continue
+    case "${entry##*/}" in
+      "$DATA_ROOT_MARKER_NAME"|gscore|napcat|astrbot|nonebot|nonebot-qqofficial|gscore-qqofficial|botshepherd)
+        ;;
+      *)
+        warn "数据目录 ${normalized} 含非 NAG 条目 ${entry##*/}，拒绝递归删除"
+        return 0
+        ;;
+    esac
+  done
   if ((PURGE_DATA)); then
     purge=1
   elif [[ -t 0 ]] && (( ! ASSUME_YES )); then
-    if prompt_yes_no "删除数据目录 ${data_root}（含机器人全部数据，不可恢复）" n; then
-      confirm="$(prompt_value "请输入 yes 确认删除 ${data_root}" "")"
+    if prompt_yes_no "删除数据目录 ${normalized}（含机器人全部数据，不可恢复）" n; then
+      confirm="$(prompt_value "请输入 yes 确认删除 ${normalized}" "")"
       if [[ "$confirm" == "yes" ]]; then
         purge=1
       else
@@ -792,10 +888,10 @@ uninstall_data_dir() {
     fi
   fi
   if ((purge)); then
-    log "删除数据目录 ${data_root}"
-    as_root rm -rf -- "$data_root"
+    log "删除数据目录 ${normalized}"
+    as_root rm -rf -- "$normalized"
   else
-    log "保留数据目录 ${data_root}"
+    log "保留数据目录 ${normalized}"
   fi
   return 0
 }
@@ -1360,7 +1456,7 @@ install_qqofficial() {
     qq_api_base="https://api.sgroup.qq.com"
   fi
 
-  [[ "$data_root" == /* ]] || die "DATA_ROOT 必须是绝对路径"
+  data_root="$(validated_data_root "$data_root")"
   case "$bind_ip" in
     127.0.0.1|0.0.0.0) ;;
     *) die "BIND_IP 必须是 127.0.0.1 或 0.0.0.0" ;;
@@ -1478,7 +1574,11 @@ EOF
     "$data_root/gscore/plugins"
   )
   if [[ "$route_kind" == "nonebot" ]]; then
-    data_dirs+=("$data_root/nonebot/data" "$data_root/nonebot/plugins")
+    data_dirs+=(
+      "$data_root/nonebot/data"
+      "$data_root/nonebot/plugins"
+      "$data_root/nonebot/site-packages"
+    )
   else
     data_dirs+=("$data_root/gscore-qqofficial")
   fi
@@ -1486,6 +1586,7 @@ EOF
     command -v sudo >/dev/null 2>&1 || die "无法创建 $data_root 且系统无 sudo"
     sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" "${data_dirs[@]}"
   fi
+  mark_data_root "$data_root"
   if [[ "$route_kind" == "direct" ]]; then
     if ! chown 10001:10001 "$data_root/gscore-qqofficial" 2>/dev/null; then
       command -v sudo >/dev/null 2>&1 || \
@@ -2381,7 +2482,7 @@ EOF
     fi
   fi
 
-  [[ "$data_root" == /* ]] || die "DATA_ROOT 必须是绝对路径"
+  data_root="$(validated_data_root "$data_root")"
   case "$bind_ip" in
     127.0.0.1|0.0.0.0) ;;
     *) die "BIND_IP 必须是 127.0.0.1 或 0.0.0.0" ;;
@@ -2700,7 +2801,8 @@ QQ_TOKEN=$qq_token
 QQ_ADMIN_IDS=$qq_admin_ids
 QQ_IS_SANDBOX=$qq_is_sandbox
 QQ_API_BASE=$qq_api_base
-NAPCAT_GSCORE_ADAPTER_ZIP_URL=$NAPCAT_ADAPTER_LATEST_URL
+NAPCAT_GSCORE_ADAPTER_ZIP_URL=$NAPCAT_ADAPTER_PINNED_URL
+NAPCAT_GSCORE_ADAPTER_SHA256=$NAPCAT_ADAPTER_PINNED_SHA256
 ASTRBOT_GSCORE_ADAPTER_REPO=https://github.com/KimigaiiWuyi/astrbot_plugin_gscore_adapter.git
 XUTHERINGWAVESUID_REPO=$XUTHERINGWAVESUID_REPO
 ROVERSIGN_REPO=$ROVERSIGN_REPO
@@ -2723,15 +2825,20 @@ EOF
       "$data_root/napcat/config"
       "$data_root/napcat/plugins"
       "$data_root/napcat/qq"
+      "$data_root/astrbot"
     )
   fi
-  ((enable_astrbot)) && data_dirs+=("$data_root/astrbot")
   ((enable_nonebot)) && \
-    data_dirs+=("$data_root/nonebot/data" "$data_root/nonebot/plugins")
+    data_dirs+=(
+      "$data_root/nonebot/data"
+      "$data_root/nonebot/plugins"
+      "$data_root/nonebot/site-packages"
+    )
   ((enable_official_nonebot)) && \
     data_dirs+=(
       "$data_root/nonebot-qqofficial/data"
       "$data_root/nonebot-qqofficial/plugins"
+      "$data_root/nonebot-qqofficial/site-packages"
     )
   ((enable_official_direct)) && data_dirs+=("$data_root/gscore-qqofficial")
   if ((use_botshepherd)); then
@@ -2749,6 +2856,7 @@ EOF
     command -v sudo >/dev/null 2>&1 || die "无法创建 $data_root"
     sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" "${data_dirs[@]}"
   fi
+  mark_data_root "$data_root"
   if ((enable_official_direct)); then
     chown 10001:10001 "$data_root/gscore-qqofficial" 2>/dev/null \
       || sudo chown 10001:10001 "$data_root/gscore-qqofficial"
@@ -3326,7 +3434,7 @@ if ((USE_BOTSHEPHERD)); then
   BOTSHEPHERD_WEBUI_PORT="$(prompt_port "BotShepherd WebUI 端口" "$BOTSHEPHERD_WEBUI_PORT" "$(env_value BOTSHEPHERD_WEBUI_PORT "$ENV_FILE" || true)" "$BIND_IP")"
 fi
 
-[[ "$DATA_ROOT" == /* ]] || die "DATA_ROOT 必须是绝对路径"
+DATA_ROOT="$(validated_data_root "$DATA_ROOT")"
 case "$BIND_IP" in
   127.0.0.1|0.0.0.0) ;;
   *) die "BIND_IP 必须是 127.0.0.1 或 0.0.0.0" ;;
@@ -3390,9 +3498,32 @@ else
   SCOREECHO_REPO="https://github.com/Loping151/ScoreEcho.git"
 fi
 
-NAPCAT_ADAPTER_URL="$(env_default NAPCAT_GSCORE_ADAPTER_ZIP_URL "$NAPCAT_ADAPTER_LATEST_URL")"
+NAPCAT_ADAPTER_URL="$(env_default NAPCAT_GSCORE_ADAPTER_ZIP_URL "$NAPCAT_ADAPTER_PINNED_URL")"
+NAPCAT_ADAPTER_SHA256="$(env_default NAPCAT_GSCORE_ADAPTER_SHA256 "")"
+if [[ "$NAPCAT_ADAPTER_URL" == "$NAPCAT_ADAPTER_LEGACY_LATEST_URL" \
+  && -z "$NAPCAT_ADAPTER_SHA256" ]]; then
+  NAPCAT_ADAPTER_URL="$NAPCAT_ADAPTER_PINNED_URL"
+  NAPCAT_ADAPTER_SHA256="$NAPCAT_ADAPTER_PINNED_SHA256"
+  log "将旧版 NapCat 适配器 latest 地址迁移为已校验的 v1.3.3 固定版本"
+fi
+if [[ "$NAPCAT_ADAPTER_URL" == "$NAPCAT_ADAPTER_PINNED_URL" \
+  && -z "$NAPCAT_ADAPTER_SHA256" ]]; then
+  NAPCAT_ADAPTER_SHA256="$NAPCAT_ADAPTER_PINNED_SHA256"
+fi
 if [[ "$ADAPTER_KIND" == "napcat" ]] && (( ! ASSUME_YES )); then
   NAPCAT_ADAPTER_URL="$(prompt_value "NapCat GScore 适配器 ZIP 地址" "$NAPCAT_ADAPTER_URL")"
+  if [[ "$NAPCAT_ADAPTER_URL" == "$NAPCAT_ADAPTER_PINNED_URL" ]]; then
+    NAPCAT_ADAPTER_SHA256="$NAPCAT_ADAPTER_PINNED_SHA256"
+  else
+    NAPCAT_ADAPTER_SHA256="$(
+      prompt_value "NapCat GScore 适配器 ZIP 的 SHA-256" "$NAPCAT_ADAPTER_SHA256"
+    )"
+  fi
+fi
+if [[ "$ADAPTER_KIND" == "napcat" ]]; then
+  [[ "$NAPCAT_ADAPTER_SHA256" =~ ^[A-Fa-f0-9]{64}$ ]] || \
+    die "NapCat GScore 适配器需要有效的 64 位 SHA-256"
+  NAPCAT_ADAPTER_SHA256="${NAPCAT_ADAPTER_SHA256,,}"
 fi
 
 GSCORE_WS_TOKEN="$(env_default GSCORE_WS_TOKEN "")"
@@ -3408,6 +3539,7 @@ for pair in \
   "GSCORE_PORT=$GSCORE_PORT" "ASTRBOT_WEBUI_PORT=$ASTRBOT_WEBUI_PORT" \
   "BOTSHEPHERD_WEBUI_PORT=$BOTSHEPHERD_WEBUI_PORT" \
   "NAPCAT_WEBUI_PORT=$NAPCAT_WEBUI_PORT" "NAPCAT_ADAPTER_URL=$NAPCAT_ADAPTER_URL" \
+  "NAPCAT_ADAPTER_SHA256=$NAPCAT_ADAPTER_SHA256" \
   "GSCORE_WS_TOKEN=$GSCORE_WS_TOKEN" "NAPCAT_MASTER_QQ=$NAPCAT_MASTER_QQ" \
   "NAPCAT_ACCOUNT=$NAPCAT_ACCOUNT"; do
   validate_single_line "${pair%%=*}" "${pair#*=}"
@@ -3524,6 +3656,7 @@ NAPCAT_IMAGE=$NAPCAT_IMAGE
 ENABLE_NONEBOT_GSCORE_ADAPTER=$([[ "$ADAPTER_KIND" == "nonebot" ]] && printf true || printf false)
 BOTSHEPHERD_ENABLED=$USE_BOTSHEPHERD
 NAPCAT_GSCORE_ADAPTER_ZIP_URL=$NAPCAT_ADAPTER_URL
+NAPCAT_GSCORE_ADAPTER_SHA256=$NAPCAT_ADAPTER_SHA256
 ASTRBOT_GSCORE_ADAPTER_REPO=https://github.com/KimigaiiWuyi/astrbot_plugin_gscore_adapter.git
 XUTHERINGWAVESUID_REPO=$XUTHERINGWAVESUID_REPO
 ROVERSIGN_REPO=$ROVERSIGN_REPO
@@ -3551,6 +3684,7 @@ elif [[ "$FRAMEWORK_KIND" == "nonebot" ]]; then
   DATA_DIRS+=(
     "$DATA_ROOT/nonebot/data"
     "$DATA_ROOT/nonebot/plugins"
+    "$DATA_ROOT/nonebot/site-packages"
   )
 fi
 if ((USE_BOTSHEPHERD)); then
@@ -3566,6 +3700,7 @@ if ! mkdir -p "${DATA_DIRS[@]}" 2>/dev/null; then
   log "需要 sudo 创建数据目录"
   sudo install -d -m 0755 -o "$NAPCAT_UID" -g "$NAPCAT_GID" "${DATA_DIRS[@]}"
 fi
+mark_data_root "$DATA_ROOT"
 
 for data_dir in "${DATA_DIRS[@]}"; do
   [[ -w "$data_dir" ]] || die "$data_dir 对 UID $NAPCAT_UID 不可写；请修正属主或权限"
