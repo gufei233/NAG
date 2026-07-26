@@ -149,6 +149,10 @@ def _find_inner_nb_package(repo: str) -> tuple[str, str] | None:
     return None
 
 
+def _valid_import_name(name: str) -> bool:
+    return bool(name) and all(part.isidentifier() for part in name.split("."))
+
+
 def _scan_plugin_sources() -> tuple[list[str], list[str], list[str], str]:
     pip_specs: list[str] = []
     load_names: list[str] = []
@@ -190,6 +194,32 @@ def _scan_plugin_sources() -> tuple[list[str], list[str], list[str], str]:
             continue
         if not os.path.isdir(path):
             continue
+        import_override = _read_text(
+            os.path.join(path, ".nag-plugin-module")
+        ).strip()
+        if import_override and _valid_import_name(import_override):
+            extra_paths.append(path)
+            src_dir = os.path.join(path, "src")
+            if os.path.isdir(src_dir):
+                extra_paths.append(src_dir)
+            load_names.append(import_override)
+            dep_texts = _repo_dependency_texts(path)
+            pip_specs.extend(
+                line.strip()
+                for text in dep_texts
+                for line in text.splitlines()
+                if line.strip() and not line.strip().startswith(("#", "-"))
+            )
+            manifest_parts.append(
+                f"repo:{entry}:override:{import_override}\n"
+                + "\n".join(dep_texts)
+            )
+            continue
+        if import_override:
+            logger.warning(
+                f"插件目录 {entry} 的 .nag-plugin-module 不是有效模块名，"
+                "继续尝试自动识别"
+            )
         inner = _find_inner_nb_package(path)
         if inner:
             pkg_base, pkg_name = inner

@@ -157,7 +157,7 @@ cd NAG
 bash install.sh
 ```
 
-首次运行时，脚本先显示三套大方案的流程图，再选择唯一的 GScore 处理方和可选框架。AstrBot 与 NoneBot 可以同时安装，两种 QQ 接入也会自动共用一套 GsCore。脚本会自动：
+直接运行脚本会先显示“安装与维护”主菜单。选择“安装、更新或调整机器人部署”后，脚本显示三套大方案的流程图，再选择唯一的 GScore 处理方和可选框架；也可以从主菜单直接进入 NoneBot 插件安装、状态查看、BotShepherd 端口管理或卸载。AstrBot 与 NoneBot 可以同时安装，两种 QQ 接入也会自动共用一套 GsCore。脚本会自动：
 
 - 创建持久化目录并生成私有配置；
 - 配置 GsCore 主人、框架管理员和共享 `WS_TOKEN`；
@@ -182,7 +182,7 @@ git pull --ff-only
 bash install.sh
 ```
 
-再次运行时，脚本读取 `.installer/guided.state` 并提供三种操作：
+再次进入“安装、更新或调整机器人部署”时，脚本读取 `.installer/guided.state` 并提供三种操作：
 
 1. **在当前大方案内自定义组件**：增删 AstrBot、NoneBot、BotShepherd，或切换 GScore 处理方；
 2. **修复或更新当前方案**：重新校验镜像、配置和连接；
@@ -546,7 +546,33 @@ ww下载全部资源
 
 ## NoneBot 插件
 
-个人 NoneBot 与官方 NoneBot 共用镜像但插件目录相互独立，日常装插件不需要重建镜像。三种来源对应三种装法（装完 `docker restart` 对应容器生效）：
+个人 NoneBot 与官方 NoneBot 共用镜像但插件目录相互独立，日常装插件不需要重建镜像。推荐使用安装器自动发现所有带 `/app/plugins` 持久化挂载的 NAG NoneBot 容器；同时存在个人 QQ 和官方 QQ 实例时，安装器会列出容器名、协议、状态和插件目录，再让你选择其中一个或全部：
+
+直接运行 `bash install.sh`，在顶层“安装与维护”菜单中选择“安装 NoneBot 插件”即可；该入口不依赖 `.installer/guided.state`。下面的命令行方式仍可用于自动化或直接进入插件安装流程。
+
+```bash
+# PyPI 包名、固定版本和 extras 均可
+bash install.sh --mode nonebot-plugin --plugin nonebot-plugin-parser
+bash install.sh --mode nonebot-plugin --plugin 'nonebot-plugin-parser[htmlrender]==2.6.6'
+
+# GitHub 仓库：克隆到所选实例的持久化插件目录，自动识别 nonebot_plugin_* 包
+bash install.sh --mode nonebot-plugin \
+  --plugin https://github.com/MimoKit/nonebot-plugin-parser
+```
+
+无人值守时必须明确指定容器名或 `all`：
+
+```bash
+bash install.sh --mode nonebot-plugin --yes \
+  --plugin nonebot-plugin-parser \
+  --plugin-target nag-nonebot
+```
+
+少数仓库不使用标准的 `nonebot_plugin_*` 包名时，可追加 `--plugin-import package.module`。加 `--dry-run` 可以只查看实例选择和安装计划。脚本会更新 `plugins.txt` 或 Git 仓库、重启所选容器，并等待依赖摘要与健康检查完成；依赖安装或插件加载失败时会打印容器日志并返回失败。NoneBot 插件会以机器人进程权限执行，只应安装你信任的包或仓库。
+
+个人 QQ 路线会把 `${DATA_ROOT}/nonebot/cache` 同时挂载到 NoneBot 与 NapCat 的 `/root/.cache/nonebot2`，其中 NapCat 使用只读挂载。这样插件向 OneBot 发送本地图片、语音或视频路径时，NapCat 能读取同一文件；既避免跨容器 `ENOENT`，也无需对大媒体启用 Base64。该共享只覆盖 NoneBot 缓存，不包含插件配置、凭据或其他持久化数据。
+
+仍可手动管理插件，三种来源对应三种装法（装完 `docker restart` 对应容器生效）：
 
 | 插件来源 | 操作 |
 | --- | --- |

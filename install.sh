@@ -32,6 +32,9 @@ NAG_CN_MODE=""
 UNINSTALL_TARGET=""
 PURGE_DATA=0
 PURGE_STATE=0
+NONEBOT_PLUGIN_INPUT=""
+NONEBOT_PLUGIN_IMPORT=""
+NONEBOT_PLUGIN_TARGET=""
 
 log() {
   printf '[NAG] %s\n' "$*"
@@ -78,6 +81,7 @@ NAG/NG 交互式部署与维护脚本。
                                    QQ 官方机器人 + gscore-qqofficial + GsCore
                   botshepherd-ports
                                    管理现有 BotShepherd 部署的宿主机端口映射
+                  nonebot-plugin   为已部署的 NoneBot 实例安装 PyPI/GitHub 插件
                   status           查看各部署的容器状态与访问地址
                   uninstall        卸载部署（可选删除数据目录与状态文件）
   --botshepherd 在包含 AstrBot/NoneBot 的模式中加入 BotShepherd
@@ -89,6 +93,11 @@ NAG/NG 交互式部署与维护脚本。
                 鸣潮插件与 PyPI 使用国内源）
   --no-cn       强制按国际网络环境处理
   --target T    配合 --mode uninstall 使用：nag、ng、nag-qqofficial 或 all
+  --plugin SPEC 配合 --mode nonebot-plugin 使用；接受 PyPI 规格或 GitHub 仓库
+  --plugin-import MODULE
+                覆盖自动识别的 Python 导入名（非标准插件仓库可使用）
+  --plugin-target CONTAINER|all
+                无人值守时指定 NoneBot 容器名；多个实例也可选择 all
   --purge-data  卸载时同时删除数据目录（不可恢复；非交互卸载默认保留）
   --purge-state 卸载时同时删除安装器状态文件（不含 NapCat 身份文件）
   --dry-run     只打印所选计划，不改动主机
@@ -139,6 +148,21 @@ while (($# > 0)); do
       UNINSTALL_TARGET="$2"
       shift 2
       ;;
+    --plugin)
+      (($# >= 2)) || die "--plugin 需要一个值"
+      NONEBOT_PLUGIN_INPUT="$2"
+      shift 2
+      ;;
+    --plugin-import)
+      (($# >= 2)) || die "--plugin-import 需要一个值"
+      NONEBOT_PLUGIN_IMPORT="$2"
+      shift 2
+      ;;
+    --plugin-target)
+      (($# >= 2)) || die "--plugin-target 需要一个值"
+      NONEBOT_PLUGIN_TARGET="$2"
+      shift 2
+      ;;
     --purge-data)
       PURGE_DATA=1
       shift
@@ -162,9 +186,32 @@ while (($# > 0)); do
 done
 
 choose_mode() {
+  local menu_choice=""
+
   if [[ -z "$MODE" ]]; then
     [[ -t 0 ]] || die "当前不是交互式终端；请通过 --mode 指定模式，必要时加 --yes"
-    MODE="guided"
+    cat <<'EOF'
+
+NAG 安装与维护
+  1) 安装、更新或调整机器人部署
+  2) 安装 NoneBot 插件
+  3) 查看部署状态
+  4) 管理 BotShepherd 端口
+  5) 卸载部署
+  6) 退出
+EOF
+    while true; do
+      read -r -p "请选择操作 [1-6]: " menu_choice
+      case "$menu_choice" in
+        1) MODE="guided"; break ;;
+        2) MODE="nonebot-plugin"; break ;;
+        3) MODE="status"; break ;;
+        4) MODE="botshepherd-ports"; break ;;
+        5) MODE="uninstall"; break ;;
+        6) log "已退出"; exit 0 ;;
+        *) warn "请输入 1 到 6 之间的有效选项" ;;
+      esac
+    done
   fi
 
   case "$MODE" in
@@ -1578,6 +1625,7 @@ EOF
       "$data_root/nonebot/data"
       "$data_root/nonebot/plugins"
       "$data_root/nonebot/site-packages"
+      "$data_root/nonebot/cache"
     )
   else
     data_dirs+=("$data_root/gscore-qqofficial")
@@ -2827,12 +2875,16 @@ EOF
       "$data_root/napcat/qq"
       "$data_root/astrbot"
     )
+    # guided 的 napcat 无条件以只读挂载 nonebot/cache（用于共享 NoneBot 发送的
+    # 本地媒体路径）；即便本次没启用 NoneBot 也先建好，避免 Docker 留下 root 属主目录。
+    data_dirs+=("$data_root/nonebot/cache")
   fi
   ((enable_nonebot)) && \
     data_dirs+=(
       "$data_root/nonebot/data"
       "$data_root/nonebot/plugins"
       "$data_root/nonebot/site-packages"
+      "$data_root/nonebot/cache"
     )
   ((enable_official_nonebot)) && \
     data_dirs+=(
@@ -3259,6 +3311,470 @@ EOF
   return 0
 }
 
+canonical_nonebot_plugin_name() {
+  local value="${1,,}"
+  value="${value//_/-}"
+  value="${value//./-}"
+  printf '%s' "$value"
+}
+
+nonebot_plugins_txt_has_package() {
+  local plugins_file="$1"
+  local package_name="$2"
+
+  [[ -f "$plugins_file" ]] || return 1
+  awk -v target="$package_name" '
+    function canonical(value) {
+      sub(/\[[^]]*\]/, "", value)
+      sub(/[<>=!~].*$/, "", value)
+      gsub(/[_.-]+/, "-", value)
+      return tolower(value)
+    }
+    BEGIN {
+      target = canonical(target)
+      found = 0
+    }
+    /^[[:space:]]*(#|$)/ {
+      next
+    }
+    canonical($1) == target {
+      found = 1
+      exit
+    }
+    END {
+      exit(found ? 0 : 1)
+    }
+  ' "$plugins_file"
+}
+
+upsert_nonebot_plugin_spec() {
+  local plugins_dir="$1"
+  local package_name="$2"
+  local plugin_line="$3"
+  local plugins_file="${plugins_dir}/plugins.txt"
+  local temporary
+
+  [[ ! -L "$plugins_file" ]] || die "拒绝写入符号链接：${plugins_file}"
+  temporary="$(mktemp)"
+  if [[ -f "$plugins_file" ]]; then
+    awk -v target="$package_name" -v replacement="$plugin_line" '
+      function canonical(value) {
+        sub(/\[[^]]*\]/, "", value)
+        sub(/[<>=!~].*$/, "", value)
+        gsub(/[_.-]+/, "-", value)
+        return tolower(value)
+      }
+      BEGIN {
+        target = canonical(target)
+        written = 0
+      }
+      /^[[:space:]]*(#|$)/ {
+        print
+        next
+      }
+      {
+        if (canonical($1) == target) {
+          if (!written) {
+            print replacement
+            written = 1
+          }
+          next
+        }
+        print
+      }
+      END {
+        if (!written) {
+          print replacement
+        }
+      }
+    ' "$plugins_file" >"$temporary"
+  else
+    printf '%s\n' "$plugin_line" >"$temporary"
+  fi
+
+  if [[ -f "$plugins_file" ]] && cmp -s -- "$plugins_file" "$temporary"; then
+    NONEBOT_PLUGIN_CONTENT_CHANGED=0
+  else
+    NONEBOT_PLUGIN_CONTENT_CHANGED=1
+  fi
+  as_root install -d -m 0755 -o "$(id -u)" -g "$(id -g)" "$plugins_dir"
+  as_root install -m 0644 -o "$(id -u)" -g "$(id -g)" \
+    "$temporary" "$plugins_file"
+  rm -f -- "$temporary"
+}
+
+install_nonebot_github_repo() {
+  local plugins_dir="$1"
+  local repo_url="$2"
+  local repo_name="$3"
+  local import_override="$4"
+  local target="${plugins_dir}/${repo_name}"
+  local output
+
+  [[ ! -L "$target" ]] || die "拒绝更新符号链接插件目录：${target}"
+  as_root install -d -m 0755 -o "$(id -u)" -g "$(id -g)" "$plugins_dir"
+  output="$(
+    "$DOCKER_BIN" run --rm \
+      --entrypoint /bin/sh \
+      -v "${plugins_dir}:/plugins" \
+      alpine/git:latest \
+      -s -- "$repo_url" "$repo_name" "$import_override" \
+      <"${SCRIPT_DIR}/scripts/install-nonebot-github-plugin.sh"
+  )"
+  printf '%s\n' "$output"
+  NONEBOT_PLUGIN_RESOLVED_IMPORT="$(
+    printf '%s\n' "$output" | sed -n 's/^NAG_PLUGIN_MODULE=//p' | tail -n 1
+  )"
+  NONEBOT_PLUGIN_CONTENT_CHANGED="$(
+    printf '%s\n' "$output" | sed -n 's/^NAG_PLUGIN_CHANGED=//p' | tail -n 1
+  )"
+  [[ -n "$NONEBOT_PLUGIN_RESOLVED_IMPORT" ]] || \
+    die "GitHub 插件仓库未返回可加载的模块名"
+  [[ "$NONEBOT_PLUGIN_CONTENT_CHANGED" == "0" \
+    || "$NONEBOT_PLUGIN_CONTENT_CHANGED" == "1" ]] || \
+    die "GitHub 插件仓库未返回有效的变更状态"
+}
+
+wait_nonebot_plugin_ready() {
+  local container_name="$1"
+  local import_name="$2"
+  local old_marker="$3"
+  local require_marker_change="$4"
+  local started_at="$5"
+  # 依赖同步跑在 nonebot.run() 之前，带 extras 的重插件（如 htmlrender→playwright）
+  # 在慢镜像源上可能耗时数分钟；上限放宽到约 15 分钟，避免误判超时。
+  local max_attempts=450
+  local attempt
+  local state
+  local health
+  local marker
+  local recent_logs
+  local since_logs
+
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+    state="$(
+      "$DOCKER_BIN" inspect --format '{{.State.Status}}' \
+        "$container_name" 2>/dev/null || true
+    )"
+    health="$(
+      "$DOCKER_BIN" inspect --format \
+        '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+        "$container_name" 2>/dev/null || true
+    )"
+    marker="$(
+      "$DOCKER_BIN" exec "$container_name" sh -c \
+        'cat /app/site-packages/.nag-deps-hash 2>/dev/null || true' \
+        2>/dev/null || true
+    )"
+    if [[ "$state" == "running" \
+      && "$health" != "starting" \
+      && "$health" != "unhealthy" \
+      && -n "$marker" ]]; then
+      if [[ "$require_marker_change" == "0" || "$marker" != "$old_marker" ]]; then
+        break
+      fi
+    fi
+    if [[ "$state" == "exited" || "$state" == "dead" ]]; then
+      "$DOCKER_BIN" logs --tail 100 "$container_name" || true
+      die "NoneBot 实例 ${container_name} 在安装插件时退出"
+    fi
+    # 依赖安装失败时 bot.py 会打印告警并跳过写标记，随后照常启动服务；
+    # 这种情况标记不会变化，若不主动检测就会一直等到超时。此处快速失败。
+    since_logs="$(
+      "$DOCKER_BIN" logs --since "$started_at" "$container_name" 2>&1 || true
+    )"
+    if printf '%s\n' "$since_logs" \
+      | grep -F "插件依赖安装失败" >/dev/null; then
+      printf '%s\n' "$since_logs" | tail -n 100 >&2
+      die "NoneBot 实例 ${container_name} 安装插件依赖失败；请排查上方日志中的网络或依赖冲突"
+    fi
+    sleep 2
+  done
+  ((attempt <= max_attempts)) || {
+    "$DOCKER_BIN" logs --tail 100 "$container_name" || true
+    die "等待 ${container_name} 完成插件依赖安装超时"
+  }
+
+  recent_logs="$(
+    "$DOCKER_BIN" logs --since "$started_at" "$container_name" 2>&1 || true
+  )"
+  if printf '%s\n' "$recent_logs" \
+    | grep -F "加载插件 ${import_name} 失败" >/dev/null; then
+    printf '%s\n' "$recent_logs" | tail -n 100 >&2
+    die "插件依赖已安装，但 NoneBot 加载 ${import_name} 失败"
+  fi
+}
+
+nonebot_plugin_mode() {
+  local plugin_input="$NONEBOT_PLUGIN_INPUT"
+  local plugin_import="$NONEBOT_PLUGIN_IMPORT"
+  local plugin_target="$NONEBOT_PLUGIN_TARGET"
+  local source_kind="pypi"
+  local package_name=""
+  local plugin_line=""
+  local github_candidate=""
+  local github_owner=""
+  local github_repo=""
+  local github_url=""
+  local container_id
+  local container_name
+  local service_name
+  local project_name
+  local plugins_dir
+  local platform
+  local state
+  local label
+  local choice
+  local index
+  local selected_index
+  local old_marker
+  local started_at
+  local resolved_import
+  local changed
+  local repo_candidate
+  local repo_candidate_name
+  local path_component
+  local -a container_ids=()
+  local -a instance_names=()
+  local -a instance_plugins=()
+  local -a instance_platforms=()
+  local -a instance_states=()
+  local -a selected=()
+  local -A seen_plugin_dirs=()
+
+  command -v "$DOCKER_BIN" >/dev/null 2>&1 || \
+    die "未检测到 Docker，无法发现 NoneBot 实例"
+  "$DOCKER_BIN" info >/dev/null 2>&1 || \
+    die "无法连接 Docker 守护进程"
+
+  mapfile -t container_ids < <("$DOCKER_BIN" ps -aq)
+  for container_id in "${container_ids[@]}"; do
+    service_name="$(
+      "$DOCKER_BIN" inspect --format \
+        '{{index .Config.Labels "com.docker.compose.service"}}' \
+        "$container_id" 2>/dev/null || true
+    )"
+    [[ "$service_name" == "nonebot" \
+      || "$service_name" == "nonebot-qqofficial" ]] || continue
+    project_name="$(
+      "$DOCKER_BIN" inspect --format \
+        '{{index .Config.Labels "com.docker.compose.project"}}' \
+        "$container_id" 2>/dev/null || true
+    )"
+    [[ "$project_name" == "nag" \
+      || "$project_name" == "nag-qqofficial" ]] || continue
+    plugins_dir="$(
+      "$DOCKER_BIN" inspect --format \
+        '{{range .Mounts}}{{if eq .Destination "/app/plugins"}}{{println .Source}}{{end}}{{end}}' \
+        "$container_id" 2>/dev/null | head -n 1
+    )"
+    [[ -n "$plugins_dir" ]] || continue
+    [[ -z "${seen_plugin_dirs["$plugins_dir"]+x}" ]] || continue
+    seen_plugin_dirs["$plugins_dir"]=1
+    container_name="$(
+      "$DOCKER_BIN" inspect --format '{{.Name}}' "$container_id"
+    )"
+    container_name="${container_name#/}"
+    platform="$(
+      "$DOCKER_BIN" inspect --format \
+        '{{range .Config.Env}}{{println .}}{{end}}' "$container_id" \
+        | awk -F= '$1 == "NONEBOT_PLATFORM" {print $2; exit}'
+    )"
+    [[ "$service_name" != "nonebot-qqofficial" ]] || platform="qqofficial"
+    platform="${platform:-onebot}"
+    state="$(
+      "$DOCKER_BIN" inspect --format '{{.State.Status}}' "$container_id"
+    )"
+    instance_names+=("$container_name")
+    instance_plugins+=("$plugins_dir")
+    instance_platforms+=("$platform")
+    instance_states+=("$state")
+  done
+
+  ((${#instance_names[@]} > 0)) || \
+    die "未发现带 /app/plugins 持久化挂载的 NAG NoneBot 实例"
+
+  printf '检测到以下 NoneBot 实例：\n'
+  for index in "${!instance_names[@]}"; do
+    if [[ "${instance_platforms[index]}" == "qqofficial" ]]; then
+      label="QQ 官方机器人"
+    else
+      label="个人 QQ / OneBot V11"
+    fi
+    printf '  %d) %s｜%s｜%s｜%s\n' \
+      "$((index + 1))" "${instance_names[index]}" "$label" \
+      "${instance_states[index]}" "${instance_plugins[index]}"
+  done
+
+  if [[ -n "$plugin_target" ]]; then
+    if [[ "$plugin_target" == "all" ]]; then
+      for index in "${!instance_names[@]}"; do
+        selected+=("$index")
+      done
+    else
+      for index in "${!instance_names[@]}"; do
+        if [[ "${instance_names[index]}" == "$plugin_target" ]]; then
+          selected+=("$index")
+          break
+        fi
+      done
+      ((${#selected[@]} == 1)) || \
+        die "未找到 --plugin-target 指定的容器：${plugin_target}"
+    fi
+  elif ((${#instance_names[@]} == 1)); then
+    selected=(0)
+    log "自动选择唯一的 NoneBot 实例：${instance_names[0]}"
+  else
+    (( ! ASSUME_YES )) || \
+      die "检测到多个 NoneBot 实例；请使用 --plugin-target <容器名|all>"
+    [[ -t 0 ]] || \
+      die "检测到多个 NoneBot 实例但当前不是交互终端；请使用 --plugin-target"
+    printf '  %d) 全部实例\n' "$((${#instance_names[@]} + 1))"
+    while true; do
+      read -r -p "请选择插件安装目标 [1-$((${#instance_names[@]} + 1))]: " choice
+      if [[ "$choice" =~ ^[0-9]+$ \
+        && "$choice" -ge 1 \
+        && "$choice" -le "$((${#instance_names[@]} + 1))" ]]; then
+        break
+      fi
+      warn "请输入有效的实例编号"
+    done
+    if [[ "$choice" -eq "$((${#instance_names[@]} + 1))" ]]; then
+      for index in "${!instance_names[@]}"; do
+        selected+=("$index")
+      done
+    else
+      selected=("$((choice - 1))")
+    fi
+  fi
+
+  if [[ -z "$plugin_input" ]]; then
+    (( ! ASSUME_YES )) || die "--mode nonebot-plugin --yes 需要 --plugin"
+    while [[ -z "$plugin_input" ]]; do
+      plugin_input="$(
+        prompt_value \
+          "PyPI 插件规格或 GitHub 仓库（例如 nonebot-plugin-parser 或 https://github.com/owner/repo）" \
+          ""
+      )"
+    done
+  fi
+  validate_single_line plugin "$plugin_input"
+  [[ "$plugin_input" != *[[:space:]]* ]] || \
+    die "插件规格不能包含空白；导入名请使用 --plugin-import"
+  github_candidate="${plugin_input#git+}"
+  github_candidate="${github_candidate%/}"
+  if [[ "$github_candidate" =~ ^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$ ]]; then
+    github_owner="${BASH_REMATCH[1]}"
+    github_repo="${BASH_REMATCH[2]%.git}"
+    source_kind="github"
+  elif [[ "$github_candidate" =~ ^git@github\.com:([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$ ]]; then
+    github_owner="${BASH_REMATCH[1]}"
+    github_repo="${BASH_REMATCH[2]%.git}"
+    source_kind="github"
+  elif [[ "$github_candidate" =~ ^github:([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$ \
+    || "$github_candidate" =~ ^([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$ ]]; then
+    github_owner="${BASH_REMATCH[1]}"
+    github_repo="${BASH_REMATCH[2]%.git}"
+    source_kind="github"
+  fi
+
+  if [[ "$source_kind" == "github" ]]; then
+    for path_component in "$github_owner" "$github_repo"; do
+      case "$path_component" in
+        ""|"."|"..")
+          die "无效的 GitHub 仓库路径：${plugin_input}"
+          ;;
+      esac
+    done
+  fi
+
+  if [[ -n "$plugin_import" \
+    && ! "$plugin_import" =~ ^[A-Za-z_][A-Za-z0-9_.]*$ ]]; then
+    die "--plugin-import 必须是有效的 Python 模块名"
+  fi
+
+  if [[ "$source_kind" == "github" ]]; then
+    github_url="https://github.com/${github_owner}/${github_repo}.git"
+    resolved_import="${plugin_import:-${github_repo//-/_}}"
+    resolved_import="${resolved_import//./_}"
+    log "GitHub 仓库：${github_url}"
+  else
+    [[ "$plugin_input" != -* \
+      && "$plugin_input" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9._,-]+\])?([\<\>\=\!\~]{1,2}[A-Za-z0-9*+._!-]+(,[\<\>\=\!\~]{1,2}[A-Za-z0-9*+._!-]+)*)?$ ]] || \
+      die "无效的 PyPI 插件规格：${plugin_input}"
+    package_name="$(
+      printf '%s' "$plugin_input" \
+        | sed -E 's/(\[[^]]*\])?([<>=!~].*)?$//'
+    )"
+    resolved_import="${plugin_import:-${package_name//-/_}}"
+    resolved_import="${resolved_import//./_}"
+    plugin_line="${plugin_input} ${resolved_import}"
+    log "PyPI 插件：${plugin_input}（导入名：${resolved_import}）"
+  fi
+
+  for selected_index in "${selected[@]}"; do
+    container_name="${instance_names[selected_index]}"
+    plugins_dir="${instance_plugins[selected_index]}"
+    if [[ "$source_kind" == "github" ]]; then
+      if nonebot_plugins_txt_has_package \
+        "${plugins_dir}/plugins.txt" "$github_repo"; then
+        die "${container_name} 的 plugins.txt 已包含 ${github_repo}；请先移除 PyPI 条目再改用 GitHub 仓库"
+      fi
+    else
+      for repo_candidate in "$plugins_dir"/*; do
+        [[ -d "${repo_candidate}/.git" ]] || continue
+        repo_candidate_name="$(
+          canonical_nonebot_plugin_name "${repo_candidate##*/}"
+        )"
+        if [[ "$repo_candidate_name" == \
+          "$(canonical_nonebot_plugin_name "$package_name")" ]]; then
+          die "${container_name} 已存在同名 GitHub 源码目录 ${repo_candidate##*/}；请先移除源码目录再改用 PyPI"
+        fi
+      done
+    fi
+    old_marker="$(
+      "$DOCKER_BIN" exec "$container_name" sh -c \
+        'cat /app/site-packages/.nag-deps-hash 2>/dev/null || true' \
+        2>/dev/null || true
+    )"
+    if ((DRY_RUN)); then
+      if [[ "$source_kind" == "github" ]]; then
+        printf '[dry-run] 将克隆/更新 %s 到 %s/%s\n' \
+          "$github_url" "${instance_plugins[selected_index]}" "$github_repo"
+      else
+        printf '[dry-run] 将写入 %s/plugins.txt：%s\n' \
+          "${instance_plugins[selected_index]}" "$plugin_line"
+      fi
+      printf '[dry-run] 将重启并验证容器：%s\n' "$container_name"
+      continue
+    fi
+
+    if [[ "$source_kind" == "github" ]]; then
+      install_nonebot_github_repo \
+        "${instance_plugins[selected_index]}" "$github_url" \
+        "$github_repo" "$plugin_import"
+      resolved_import="$NONEBOT_PLUGIN_RESOLVED_IMPORT"
+      changed="$NONEBOT_PLUGIN_CONTENT_CHANGED"
+    else
+      upsert_nonebot_plugin_spec \
+        "${instance_plugins[selected_index]}" "$package_name" "$plugin_line"
+      changed="$NONEBOT_PLUGIN_CONTENT_CHANGED"
+    fi
+
+    started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    log "重启 ${container_name}，由 NoneBot 自动解析并安装插件依赖"
+    "$DOCKER_BIN" restart "$container_name" >/dev/null
+    wait_nonebot_plugin_ready \
+      "$container_name" "$resolved_import" "$old_marker" \
+      "$changed" "$started_at"
+    log "插件 ${resolved_import} 已在 ${container_name} 中安装并通过启动检查"
+  done
+
+  if ((DRY_RUN)); then
+    log "dry-run 完成；未修改插件目录或容器"
+  fi
+}
+
 choose_mode
 
 if [[ "$MODE" == "status" ]]; then
@@ -3273,6 +3789,11 @@ fi
 
 if [[ "$MODE" == "botshepherd-ports" ]]; then
   manage_botshepherd_ports
+  exit 0
+fi
+
+if [[ "$MODE" == "nonebot-plugin" ]]; then
+  nonebot_plugin_mode
   exit 0
 fi
 
@@ -3685,6 +4206,7 @@ elif [[ "$FRAMEWORK_KIND" == "nonebot" ]]; then
     "$DATA_ROOT/nonebot/data"
     "$DATA_ROOT/nonebot/plugins"
     "$DATA_ROOT/nonebot/site-packages"
+    "$DATA_ROOT/nonebot/cache"
   )
 fi
 if ((USE_BOTSHEPHERD)); then

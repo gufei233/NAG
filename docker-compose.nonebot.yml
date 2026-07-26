@@ -54,6 +54,7 @@ services:
       - ${DATA_ROOT:-/opt/nag-data}/nonebot/data:/app/data
       - ${DATA_ROOT:-/opt/nag-data}/nonebot/plugins:/app/plugins
       - ${DATA_ROOT:-/opt/nag-data}/nonebot/site-packages:/app/site-packages
+      - ${DATA_ROOT:-/opt/nag-data}/nonebot/cache:/root/.cache/nonebot2
     depends_on:
       - gscore
     healthcheck:
@@ -83,6 +84,7 @@ services:
       - ${DATA_ROOT:-/opt/nag-data}/napcat/config:/app/napcat/config
       - ${DATA_ROOT:-/opt/nag-data}/napcat/plugins:/app/napcat/plugins
       - ${DATA_ROOT:-/opt/nag-data}/napcat/qq:/app/.config/QQ
+      - ${DATA_ROOT:-/opt/nag-data}/nonebot/cache:/root/.cache/nonebot2:ro
     depends_on:
       nonebot:
         condition: service_healthy
