@@ -5,6 +5,12 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+RUN apt-get update \
+ && apt-get install --no-install-recommends -y \
+      ffmpeg \
+      libcairo2 \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt \
  && pip freeze > /app/constraints.txt

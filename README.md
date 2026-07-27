@@ -583,7 +583,7 @@ bash install.sh --mode nonebot-plugin --yes \
 
 插件目录位置：个人 NB 为 `$DATA_ROOT/nonebot/plugins/`，官方 NB 为 `$DATA_ROOT/nonebot-qqofficial/plugins/`；单文件插件（`xxx.py`）和含 `__init__.py` 的包目录也可直接放入。
 
-依赖处理：启动时汇总 `plugins.txt` 与各插件仓库的 `requirements.txt` / `pyproject.toml` 依赖声明，安装到挂载的 `site-packages` 持久目录（重建镜像不丢失）；插件声明、镜像内 `constraints.txt` 和 Python 主次版本都未变化时跳过安装，日常启动零开销。核心包版本由镜像内约束锁定，插件依赖不会升级 nonebot2 与适配器；重建镜像导致约束或 Python 版本变化时会自动重新解析持久依赖。大陆网络下 `NONEBOT_PYTHON_INDEX` 会随安装器的网络模式自动指向国内 PyPI 镜像。依赖安装失败会在日志中提示并可能影响本批次发生依赖变化的目录插件，但不会阻断机器人主体启动。
+依赖处理：启动时汇总 `plugins.txt` 与各插件仓库的 `requirements.txt` / `pyproject.toml` 依赖声明，安装到挂载的 `site-packages` 持久目录（重建镜像不丢失）；插件声明、镜像内 `constraints.txt` 和 Python 主次版本都未变化时跳过安装，日常启动零开销。核心包版本由镜像内约束锁定，插件依赖不会升级 nonebot2 与适配器；重建镜像导致约束或 Python 版本变化时会自动重新解析持久依赖。大陆网络下 `NONEBOT_PYTHON_INDEX` 会随安装器的网络模式自动指向国内 PyPI 镜像。依赖安装失败会在日志中提示并可能影响本批次发生依赖变化的目录插件，但不会阻断机器人主体启动。`nonebot-plugin-parser[all]` 仍只声明 Python 包依赖；其媒体合并和 emoji 本地渲染所需的 `ffmpeg`、Cairo 系统组件已预装到 NAG NoneBot 镜像。
 
 需要编译型重依赖或希望依赖进镜像时，仍可使用传统方式：`nonebot/requirements.txt` 加包名、`nonebot/bot.py` 加 `nonebot.load_plugin(...)`，然后重跑 `bash install.sh` 重建（该方式对两个 NoneBot 实例同时生效）。
 
