@@ -21,16 +21,11 @@ services:
       - ${DATA_ROOT:-/opt/nag-data}/botshepherd/logs:/app/logs
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    depends_on:
-      nonebot:
-        condition: service_healthy
     networks:
       - nag-net
 
   napcat:
     depends_on:
-      nonebot:
-        condition: service_healthy
       botshepherd:
         condition: service_started
 

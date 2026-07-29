@@ -15,8 +15,12 @@ readonly NAPCAT_ADAPTER_PINNED_URL="https://github.com/xiowo/napcat-plugin-gscor
 readonly NAPCAT_ADAPTER_PINNED_SHA256="1776762d0ed8d16ddb8228b98f599c5fa9d166c4a34df5bb0c8f1e2ddd2387ef"
 readonly BOTSHEPHERD_IMAGE_DEFAULT="ghcr.io/gufei233/botshepherd:v1.2.1-docker.1"
 readonly GSCORE_QQOFFICIAL_COMMIT="2d582f6478a0c0d94aa31d7151c0acabce65ea21"
+readonly NAG_MIMO_CONSOLE_COMMIT="${MIMO_CONSOLE_COMMIT:-bfce00254a60008018a91e9b61dc3b785f315ed9}"
+readonly NAG_MIMO_CONSOLE_REPOSITORY="${MIMO_CONSOLE_REPOSITORY:-gufei233/nonebot-plugin-mimo-console}"
+readonly NAG_MIMO_CONSOLE_GIT_URL="${MIMO_CONSOLE_GIT_URL:-https://github.com/gufei233/nonebot-plugin-mimo-console.git}"
 readonly DATA_ROOT_MARKER_NAME=".nag-managed-data-root"
 readonly DATA_ROOT_MARKER_VALUE="NAG_DATA_ROOT_V1"
+readonly INSTALL_LOCK_DIR="${STATE_DIR}/install.lock"
 
 MODE=""
 ASSUME_YES=0
@@ -61,6 +65,41 @@ on_error() {
 }
 trap 'on_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
 
+release_installer_lock() {
+  [[ -d "$INSTALL_LOCK_DIR" && ! -L "$INSTALL_LOCK_DIR" ]] || return 0
+  rm -f -- "${INSTALL_LOCK_DIR}/pid"
+  rmdir -- "$INSTALL_LOCK_DIR" 2>/dev/null || true
+}
+
+acquire_installer_lock() {
+  local owner_pid=""
+
+  mkdir -p -- "$STATE_DIR"
+  if mkdir -- "$INSTALL_LOCK_DIR" 2>/dev/null; then
+    printf '%s\n' "$$" >"${INSTALL_LOCK_DIR}/pid"
+    trap release_installer_lock EXIT
+    return 0
+  fi
+
+  [[ -d "$INSTALL_LOCK_DIR" && ! -L "$INSTALL_LOCK_DIR" ]] || \
+    die "安装锁路径异常：${INSTALL_LOCK_DIR}"
+  if [[ -f "${INSTALL_LOCK_DIR}/pid" && ! -L "${INSTALL_LOCK_DIR}/pid" ]]; then
+    read -r owner_pid <"${INSTALL_LOCK_DIR}/pid" || true
+  fi
+  if [[ "$owner_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$owner_pid" 2>/dev/null; then
+    die "已有 NAG 安装或维护任务正在运行（PID ${owner_pid}）；请等待其完成后重试"
+  fi
+
+  rm -f -- "${INSTALL_LOCK_DIR}/pid"
+  if rmdir -- "$INSTALL_LOCK_DIR" 2>/dev/null \
+    && mkdir -- "$INSTALL_LOCK_DIR" 2>/dev/null; then
+    printf '%s\n' "$$" >"${INSTALL_LOCK_DIR}/pid"
+    trap release_installer_lock EXIT
+    return 0
+  fi
+  die "检测到无法安全清理的旧安装锁：${INSTALL_LOCK_DIR}"
+}
+
 usage() {
   cat <<'EOF'
 用法：bash install.sh [选项]
@@ -81,7 +120,7 @@ NAG/NG 交互式部署与维护脚本。
                                    QQ 官方机器人 + gscore-qqofficial + GsCore
                   botshepherd-ports
                                    管理现有 BotShepherd 部署的宿主机端口映射
-                  nonebot-plugin   为已部署的 NoneBot 实例安装 PyPI/GitHub 插件
+                  nonebot-plugin   打开官方 Docker NoneBot 的 Mimo Console 插件管理入口
                   status           查看各部署的容器状态与访问地址
                   uninstall        卸载部署（可选删除数据目录与状态文件）
   --botshepherd 在包含 AstrBot/NoneBot 的模式中加入 BotShepherd
@@ -93,7 +132,7 @@ NAG/NG 交互式部署与维护脚本。
                 鸣潮插件与 PyPI 使用国内源）
   --no-cn       强制按国际网络环境处理
   --target T    配合 --mode uninstall 使用：nag、ng、nag-qqofficial 或 all
-  --plugin SPEC 配合 --mode nonebot-plugin 使用；接受 PyPI 规格或 GitHub 仓库
+  --plugin SPEC 仅兼容旧版 NAG NoneBot；官方 Docker 项目请在 Mimo Console 中管理
   --plugin-import MODULE
                 覆盖自动识别的 Python 导入名（非标准插件仓库可使用）
   --plugin-target CONTAINER|all
@@ -194,7 +233,7 @@ choose_mode() {
 
 NAG 安装与维护
   1) 安装、更新或调整机器人部署
-  2) 安装 NoneBot 插件
+  2) 管理 NoneBot 插件（Mimo Console）
   3) 查看部署状态
   4) 管理 BotShepherd 端口
   5) 卸载部署
@@ -486,6 +525,262 @@ gscore_python_index() {
   else
     printf 'https://pypi.org/simple/'
   fi
+}
+
+ensure_uv_runtime() {
+  local installer
+
+  if command -v uv >/dev/null 2>&1; then
+    return 0
+  fi
+  ensure_host_cmd curl curl
+  installer="$(mktemp)"
+  log "下载 uv 官方安装脚本"
+  if ! curl -LsSf --connect-timeout 15 https://astral.sh/uv/install.sh \
+    -o "$installer"; then
+    rm -f "$installer"
+    die "下载 uv 官方安装脚本失败；请先安装 uv 后重试"
+  fi
+  if ! as_root env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 \
+    sh "$installer"; then
+    rm -f "$installer"
+    die "uv 安装失败；请参考 https://docs.astral.sh/uv/ 手动安装"
+  fi
+  rm -f "$installer"
+  command -v uv >/dev/null 2>&1 || \
+    die "uv 安装完成后仍无法从 PATH 找到"
+}
+
+json_array_from_csv() {
+  local csv="$1"
+  python3 - "$csv" <<'PY'
+import json
+import sys
+
+print(
+    json.dumps(
+        [item.strip() for item in sys.argv[1].split(",") if item.strip()],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ),
+    end="",
+)
+PY
+}
+
+write_official_nonebot_environment() {
+  local kind="$1"
+  local output="$2"
+  local superusers_csv="$3"
+  local bot_id="$4"
+  local gscore_token="$5"
+  local command_start_csv="$6"
+  local instance_id="$7"
+  local qq_app_id="${8:-}"
+  local qq_app_secret="${9:-}"
+  local qq_token="${10:-}"
+  local qq_is_sandbox="${11:-false}"
+  local superusers_json
+  local command_start_json
+  local qq_bots_json="[]"
+  local temporary="${output}.tmp"
+
+  superusers_json="$(json_array_from_csv "$superusers_csv")"
+  command_start_json="$(json_array_from_csv "$command_start_csv")"
+  if [[ "$kind" == "official" ]]; then
+    qq_bots_json="$(
+      python3 - "$qq_app_id" "$qq_app_secret" "$qq_token" <<'PY'
+import json
+import sys
+
+print(
+    json.dumps(
+        [
+            {
+                "id": sys.argv[1],
+                "secret": sys.argv[2],
+                "token": sys.argv[3],
+                "use_websocket": True,
+                "intent": {
+                    "guilds": False,
+                    "guild_members": False,
+                    "guild_messages": False,
+                    "guild_message_reactions": False,
+                    "direct_message": True,
+                    "open_forum_event": False,
+                    "audio_live_member": False,
+                    "c2c_group_at_messages": True,
+                    "interaction": False,
+                    "message_audit": False,
+                    "forum_event": False,
+                    "audio_action": False,
+                    "at_messages": True,
+                },
+            }
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ),
+    end="",
+)
+PY
+    )"
+  fi
+
+  cat >"$temporary" <<EOF
+# Generated by NAG for an official nb-cli Docker project.
+ENVIRONMENT=prod
+HOST=0.0.0.0
+PORT=8080
+DRIVER=~fastapi+~httpx+~websockets
+SUPERUSERS=$superusers_json
+COMMAND_START=$command_start_json
+GSUID_CORE_HOST=gscore
+GSUID_CORE_PORT=8765
+GSUID_CORE_BOTID=$bot_id
+GSUID_CORE_WS_TOKEN=$gscore_token
+GSUID_CORE_REPEAT=true
+MIMO_CONSOLE_DEPLOYMENT_MODE=auto
+MIMO_CONSOLE_INSTANCE_ID=$instance_id
+MIMO_CONSOLE_AGENT_SOCKET=/run/mimo-agent/agent.sock
+MIMO_CONSOLE_AGENT_TOKEN_FILE=/run/secrets/mimo-agent-token
+EOF
+  if [[ "$kind" == "official" ]]; then
+    cat >>"$temporary" <<EOF
+QQ_IS_SANDBOX=$qq_is_sandbox
+QQ_BOTS=$qq_bots_json
+EOF
+  fi
+  chmod 600 "$temporary"
+  mv -f "$temporary" "$output"
+}
+
+prepare_official_nonebot_instance() {
+  local kind="$1"
+  local with_gs="$2"
+  local project_dir="$3"
+  local environment_file="$4"
+  local data_dir="$5"
+  local cache_dir="$6"
+  local compose_project="$7"
+  local container_name="$8"
+  local network_alias="$9"
+  local network_name="${10}"
+  local web_port="${11}"
+  local token_file="${12}"
+  local image_repository="${13}"
+
+  ensure_uv_runtime
+  ensure_host_cmd git git
+  ensure_host_cmd python3 python3
+  ensure_host_cmd openssl openssl
+  validate_port MIMO_CONSOLE_PORT "$web_port"
+
+  as_root env \
+    MIMO_CONSOLE_COMMIT="$NAG_MIMO_CONSOLE_COMMIT" \
+    MIMO_CONSOLE_REPOSITORY="$NAG_MIMO_CONSOLE_REPOSITORY" \
+    bash "${SCRIPT_DIR}/scripts/prepare-nonebot-official-project.sh" \
+    --kind "$kind" \
+    --with-gs "$with_gs" \
+    --project-dir "$project_dir" \
+    --environment-file "$environment_file" \
+    --data-dir "$data_dir" \
+    --cache-dir "$cache_dir" \
+    --compose-project "$compose_project" \
+    --container-name "$container_name" \
+    --network "$network_name" \
+    --network-alias "$network_alias" \
+    --web-port "$web_port" \
+    --token-file "$token_file" \
+    --image-repository "$image_repository"
+
+  as_root env \
+    MIMO_CONSOLE_COMMIT="$NAG_MIMO_CONSOLE_COMMIT" \
+    MIMO_CONSOLE_GIT_URL="$NAG_MIMO_CONSOLE_GIT_URL" \
+    bash "${SCRIPT_DIR}/scripts/register-mimo-agent-instance.sh" \
+    --instance-id "$kind" \
+    --project-dir "$project_dir" \
+    --compose-project "$compose_project" \
+    --image-repository "$image_repository" \
+    --health-port "$web_port" \
+    --token-file "$token_file"
+}
+
+official_nonebot_cli() {
+  local project_dir="$1"
+  local compose_project="$2"
+  local action
+  shift 2
+  action="${1:-}"
+  as_root env \
+    COMPOSE_PROJECT_NAME="$compose_project" \
+    COMPOSE_FILE=docker-compose.yml:docker-compose.nag.yml \
+    uvx --directory "$project_dir" \
+      --from "nb-cli==1.7.4" \
+      --with "nb-cli-plugin-docker==0.6.1" \
+      nb docker "$@"
+
+  # nb-cli-plugin-docker 0.6.1 may return success even when the nested Compose
+  # build failed. Re-run the cached build through Compose so its real exit code
+  # reaches the installer, and verify that `up` actually created a live service.
+  if [[ "$action" == "build" ]]; then
+    as_root "$DOCKER_BIN" compose \
+      --project-directory "$project_dir" \
+      -p "$compose_project" \
+      -f "${project_dir}/docker-compose.yml" \
+      -f "${project_dir}/docker-compose.nag.yml" \
+      build
+  elif [[ "$action" == "up" ]]; then
+    [[ -n "$(
+      as_root "$DOCKER_BIN" compose \
+        --project-directory "$project_dir" \
+        -p "$compose_project" \
+        -f "${project_dir}/docker-compose.yml" \
+        -f "${project_dir}/docker-compose.nag.yml" \
+        ps --status running -q nonebot 2>/dev/null || true
+    )" ]] || die "官方 NoneBot Compose 服务未成功启动：${compose_project}"
+  fi
+}
+
+wait_mimo_setup_token() {
+  local container_name="$1"
+  local started_at
+  local configured
+  local token
+  local attempt
+  local -a log_args=()
+
+  started_at="$(
+    "$DOCKER_BIN" inspect --format '{{.State.StartedAt}}' \
+      "$container_name" 2>/dev/null || true
+  )"
+  [[ -z "$started_at" ]] || log_args=(--since "$started_at")
+  for ((attempt = 1; attempt <= 20; attempt++)); do
+    configured="$(
+      "$DOCKER_BIN" exec "$container_name" python -c '
+import json
+from urllib.request import urlopen
+payload = json.load(
+    urlopen("http://127.0.0.1:8080/mimo-console/api/auth/status", timeout=3)
+)
+print("true" if payload.get("configured") else "false", end="")
+' 2>/dev/null || true
+    )"
+    [[ "$configured" != "true" ]] || return 1
+
+    token="$(
+      "$DOCKER_BIN" logs "${log_args[@]}" "$container_name" 2>&1 \
+        | sed -n \
+          's/.*\[Mimo Console\] \([A-Za-z0-9_-]\{24,128\}\).*/\1/p' \
+        | tail -n 1
+    )"
+    if [[ -n "$token" ]]; then
+      printf '%s' "$token"
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
 }
 
 install_docker_engine() {
@@ -828,6 +1123,10 @@ status_mode() {
   local services
   local svc
   local printed=0
+  local official_project
+  local official_label
+  local official_container
+  local official_port
 
   command -v "$DOCKER_BIN" >/dev/null 2>&1 || die "未检测到 Docker，无法查询状态"
   "$DOCKER_BIN" compose version >/dev/null 2>&1 || die "需要 Docker Compose V2"
@@ -877,8 +1176,39 @@ status_mode() {
     printf '查看日志：docker compose -p %s logs --tail 100 <服务名>\n' "$proj"
   done
 
+  for official_project in nag-nonebot-personal nag-nonebot-official; do
+    official_container="$(
+      "$DOCKER_BIN" ps -aq \
+        --filter "label=com.docker.compose.project=${official_project}" \
+        --filter "label=com.docker.compose.service=nonebot" \
+        | head -n 1
+    )"
+    [[ -n "$official_container" ]] || continue
+    printed=1
+    if [[ "$official_project" == "nag-nonebot-personal" ]]; then
+      official_label="个人 QQ NoneBot（官方 Docker 项目）"
+      official_port=18081
+    else
+      official_label="QQ 官方 NoneBot（官方 Docker 项目）"
+      official_port=18082
+    fi
+    port="$(
+      "$DOCKER_BIN" port "$official_container" 8080/tcp 2>/dev/null \
+        | head -n 1
+    )"
+    [[ -z "$port" ]] || official_port="${port##*:}"
+    printf '\n=== %s（compose 项目：%s）===\n' \
+      "$official_label" "$official_project"
+    "$DOCKER_BIN" ps -a \
+      --filter "label=com.docker.compose.project=${official_project}" \
+      --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+    printf 'Mimo Console：http://127.0.0.1:%s/mimo-console/\n' \
+      "$official_port"
+    printf '项目由 nb docker generate/build/up 管理；Python 插件与依赖由 Mimo Console 管理。\n'
+  done
+
   if (( ! printed )); then
-    log "未检测到任何 NAG 部署（compose 项目 nag / ng / nag-qqofficial 均无容器与配置）"
+    log "未检测到任何 NAG 部署"
   fi
   return 0
 }
@@ -977,6 +1307,43 @@ uninstall_state_files() {
   return 0
 }
 
+down_official_nonebot_project() {
+  local project_dir="$1"
+  local compose_project="$2"
+  local container_id
+  local owner_dir
+
+  [[ -f "${project_dir}/docker-compose.yml" \
+    && -f "${project_dir}/docker-compose.nag.yml" ]] || return 0
+  container_id="$(
+    "$DOCKER_BIN" ps -aq \
+      --filter "label=com.docker.compose.project=${compose_project}" \
+      --filter "label=com.docker.compose.service=nonebot" \
+      | head -n 1
+  )"
+  if [[ -n "$container_id" ]]; then
+    owner_dir="$(
+      "$DOCKER_BIN" inspect --format \
+        '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' \
+        "$container_id" 2>/dev/null || true
+    )"
+    if [[ -n "$owner_dir" \
+      && "$(realpath -m -- "$owner_dir")" != "$(realpath -m -- "$project_dir")" ]]; then
+      warn "Compose 项目 ${compose_project} 当前属于 ${owner_dir}；跳过停止旧项目 ${project_dir}"
+      return 0
+    fi
+  fi
+  log "停止官方 Docker NoneBot 项目：${compose_project}"
+  if ! "$DOCKER_BIN" compose \
+    --project-directory "$project_dir" \
+    --project-name "$compose_project" \
+    --file "${project_dir}/docker-compose.yml" \
+    --file "${project_dir}/docker-compose.nag.yml" \
+    down --remove-orphans; then
+    warn "停止官方 Docker NoneBot 项目 ${compose_project} 失败，继续后续清理"
+  fi
+}
+
 uninstall_mode() {
   local proj
   local choice
@@ -1044,13 +1411,42 @@ uninstall_mode() {
   fi
 
   for proj in "${selected[@]}"; do
+    env_file="$(newest_env_file_for_project "$proj")"
+    data_root=""
+    [[ -z "$env_file" ]] || data_root="$(env_value DATA_ROOT "$env_file" || true)"
+    if [[ -n "$data_root" ]]; then
+      case "$proj" in
+        nag)
+          if [[ -f "${data_root}/nonebot/project/docker-compose.nag.yml" ]]; then
+            down_official_nonebot_project \
+              "${data_root}/nonebot/project" nag-nonebot-personal
+            as_root bash \
+              "${SCRIPT_DIR}/scripts/unregister-mimo-agent-instance.sh" \
+              --project-dir "${data_root}/nonebot/project" personal
+          fi
+          if [[ -f "${data_root}/nonebot-qqofficial/project/docker-compose.nag.yml" ]]; then
+            down_official_nonebot_project \
+              "${data_root}/nonebot-qqofficial/project" nag-nonebot-official
+            as_root bash \
+              "${SCRIPT_DIR}/scripts/unregister-mimo-agent-instance.sh" \
+              --project-dir "${data_root}/nonebot-qqofficial/project" official
+          fi
+          ;;
+        nag-qqofficial)
+          if [[ -f "${data_root}/nonebot/project/docker-compose.nag.yml" ]]; then
+            down_official_nonebot_project \
+              "${data_root}/nonebot/project" nag-nonebot-official
+            as_root bash \
+              "${SCRIPT_DIR}/scripts/unregister-mimo-agent-instance.sh" \
+              --project-dir "${data_root}/nonebot/project" official
+          fi
+          ;;
+      esac
+    fi
     log "停止并移除容器与网络（compose 项目：${proj}）"
     if ! "$DOCKER_BIN" compose -p "$proj" down --remove-orphans --volumes; then
       warn "docker compose -p ${proj} down 失败，继续后续清理"
     fi
-    env_file="$(newest_env_file_for_project "$proj")"
-    data_root=""
-    [[ -z "$env_file" ]] || data_root="$(env_value DATA_ROOT "$env_file" || true)"
     if [[ -n "$data_root" ]]; then
       uninstall_data_dir "$data_root"
     fi
@@ -1592,6 +1988,7 @@ DATA_ROOT=$data_root
 BIND_IP=$bind_ip
 TZ=Asia/Shanghai
 GSCORE_PORT=$gscore_port
+MIMO_OFFICIAL_PORT=${MIMO_OFFICIAL_PORT:-18082}
 GSCORE_IMAGE=docker.cnb.cool/gscore-mirror/gsuid_core:latest
 NONEBOT_IMAGE=nag-nonebot:local
 GSCORE_QQOFFICIAL_IMAGE=nag-gscore-qqofficial:0.7.0-2d582f6
@@ -1623,9 +2020,8 @@ EOF
   if [[ "$route_kind" == "nonebot" ]]; then
     data_dirs+=(
       "$data_root/nonebot/data"
-      "$data_root/nonebot/plugins"
-      "$data_root/nonebot/site-packages"
       "$data_root/nonebot/cache"
+      "$data_root/nonebot/project"
     )
   else
     data_dirs+=("$data_root/gscore-qqofficial")
@@ -1635,6 +2031,24 @@ EOF
     sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" "${data_dirs[@]}"
   fi
   mark_data_root "$data_root"
+  local official_project="${data_root}/nonebot/project"
+  local official_mimo_port="${MIMO_OFFICIAL_PORT:-18082}"
+  if [[ "$route_kind" == "nonebot" ]]; then
+    local command_start
+    command_start="$(env_value NONEBOT_COMMAND_START "$tmp_env")"
+    command_start="${command_start:-/}"
+    write_official_nonebot_environment \
+      official "${official_project}/.env.prod" "$qq_admin_ids" \
+      NoneBot2 "$gscore_ws_token" "$command_start" official \
+      "$qq_app_id" "$qq_app_secret" "$qq_token" "$qq_is_sandbox"
+    log "按 NoneBot 官方 CLI 流程生成 QQ 官方项目"
+    prepare_official_nonebot_instance \
+      official true "$official_project" "${official_project}/.env.prod" \
+      "$data_root/nonebot/data" "$data_root/nonebot/cache" \
+      nag-nonebot-official nag-qqofficial-nonebot nonebot \
+      nag-qqofficial-net "$official_mimo_port" \
+      /etc/mimo-console-agent/official.token local/nag-nonebot-official
+  fi
   if [[ "$route_kind" == "direct" ]]; then
     if ! chown 10001:10001 "$data_root/gscore-qqofficial" 2>/dev/null; then
       command -v sudo >/dev/null 2>&1 || \
@@ -1688,10 +2102,7 @@ EOF
   official_compose config --quiet
   log "拉取 GsCore 镜像"
   official_compose pull gscore
-  if [[ "$route_kind" == "nonebot" ]]; then
-    log "构建 NoneBot（nonebot-adapter-qq 1.7.1）"
-    official_compose build nonebot
-  else
+  if [[ "$route_kind" != "nonebot" ]]; then
     log "从固定的上游 commit 构建 gscore-qqofficial"
     official_compose build gscore-qqofficial
   fi
@@ -1746,11 +2157,16 @@ PY
 
   if [[ "$route_kind" == "nonebot" ]]; then
     official_compose stop gscore-qqofficial >/dev/null 2>&1 || true
-    log "启动 NoneBot QQ 官方适配器"
+    if [[ -n "$(official_compose ps -aq nonebot 2>/dev/null || true)" ]]; then
+      log "移除旧版 NAG 自定义 NoneBot 服务"
+      official_compose rm --stop --force nonebot >/dev/null
+    fi
+    log "通过 nb docker build/up 启动 QQ 官方 NoneBot"
     connection_check_since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    official_compose up -d --no-deps --force-recreate nonebot
+    official_nonebot_cli "$official_project" nag-nonebot-official build
+    official_nonebot_cli "$official_project" nag-nonebot-official up -d
     for ((attempt = 1; attempt <= 60; attempt++)); do
-      if official_compose exec -T nonebot python -c \
+      if "$DOCKER_BIN" exec nag-qqofficial-nonebot python -c \
         'import socket; s=socket.create_connection(("127.0.0.1",8080),3); s.close()' \
         >/dev/null 2>&1; then
         nonebot_ready=1
@@ -1759,18 +2175,17 @@ PY
       sleep 2
     done
     if (( ! nonebot_ready )); then
-      official_compose logs --tail=120 nonebot || true
+      "$DOCKER_BIN" logs --tail=120 nag-qqofficial-nonebot || true
       die "NoneBot QQ 官方适配器 120 秒内未达到健康状态"
     fi
     official_finalize_gscore_plugins
     for ((attempt = 1; attempt <= 60; attempt++)); do
       local nonebot_logs
       nonebot_logs="$(
-        official_compose logs \
-          --since "$connection_check_since" --no-color nonebot 2>/dev/null \
-          || true
+        "$DOCKER_BIN" logs --since "$connection_check_since" \
+          nag-qqofficial-nonebot 2>/dev/null || true
       )"
-      if [[ "$nonebot_logs" == *"Bot "*" connected"* ]]; then
+      if [[ "$nonebot_logs" == *"EventType.READY"* ]]; then
         qq_gateway_ready=1
       fi
       if [[ "$nonebot_logs" == *"与[gsuid-core]成功连接"* ]]; then
@@ -1786,15 +2201,18 @@ PY
       sleep 2
     done
     if (( ! qq_gateway_ready )); then
-      official_compose logs --tail=120 nonebot || true
+      "$DOCKER_BIN" logs --tail=120 nag-qqofficial-nonebot || true
       die "NoneBot 已启动，但 120 秒内未连上 QQ 官方 Gateway"
     fi
     if (( ! gscore_adapter_ready )); then
-      official_compose logs --tail=120 nonebot || true
+      "$DOCKER_BIN" logs --tail=120 nag-qqofficial-nonebot || true
       die "NoneBot 已连上 QQ，但 GenshinUID 120 秒内未连上 GsCore"
     fi
   else
     official_compose stop nonebot >/dev/null 2>&1 || true
+    if [[ -f "${official_project}/docker-compose.yml" ]]; then
+      official_nonebot_cli "$official_project" nag-nonebot-official down
+    fi
     log "启动 gscore-qqofficial"
     connection_check_since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     official_compose up -d --no-deps --force-recreate gscore-qqofficial
@@ -1831,6 +2249,15 @@ print(config.get("REGISTER_CODE", ""), end="")
 ' 2>/dev/null || true
   )"
   official_compose ps
+  if [[ "$route_kind" == "nonebot" ]]; then
+    official_nonebot_cli "$official_project" nag-nonebot-official ps
+  fi
+  local official_mimo_setup_token=""
+  if [[ "$route_kind" == "nonebot" ]]; then
+    official_mimo_setup_token="$(
+      wait_mimo_setup_token nag-qqofficial-nonebot || true
+    )"
+  fi
   # Deployment succeeded; only now replace the previous private environment.
   mv -f "$tmp_env" "$env_file"
   chmod 600 "$env_file"
@@ -1843,6 +2270,14 @@ GsCore WebUI：http://${bind_ip}:${gscore_port}/app/
 GsCore 注册码：${register_code:-未读取到，请查看 $data_root/gscore/data/config.json}
 QQ 官方凭据：已保存到 $env_file（权限 600，未写入仓库）
 EOF
+  if [[ "$route_kind" == "nonebot" ]]; then
+    printf 'Mimo Console：http://127.0.0.1:%s/mimo-console/\n' \
+      "$official_mimo_port"
+    if [[ -n "$official_mimo_setup_token" ]]; then
+      printf 'Mimo Console 初始化令牌：%s\n' \
+        "$official_mimo_setup_token"
+    fi
+  fi
   if [[ -z "$qq_admin_ids" ]]; then
     cat <<'EOF'
 
@@ -2424,12 +2859,10 @@ EOF
   local personal_added=0
   local official_added=0
   local astrbot_added=0
-  local nonebot_added=0
   local botshepherd_added=0
   ((use_personal && ! old_use_personal)) && personal_added=1
   ((use_official && ! old_use_official)) && official_added=1
   ((enable_astrbot && ! old_enable_astrbot)) && astrbot_added=1
-  ((enable_nonebot && ! old_enable_nonebot)) && nonebot_added=1
   ((use_botshepherd && ! old_use_botshepherd)) && botshepherd_added=1
 
   if ((use_personal)); then
@@ -2825,6 +3258,8 @@ GSCORE_PORT=$gscore_port
 NAPCAT_WEBUI_PORT=$napcat_port
 ASTRBOT_WEBUI_PORT=$astrbot_port
 BOTSHEPHERD_WEBUI_PORT=$botshepherd_port
+MIMO_PERSONAL_PORT=${MIMO_PERSONAL_PORT:-18081}
+MIMO_OFFICIAL_PORT=${MIMO_OFFICIAL_PORT:-18082}
 NAPCAT_UID=$(id -u)
 NAPCAT_GID=$(id -g)
 NAPCAT_ACCOUNT=$napcat_account
@@ -2882,15 +3317,14 @@ EOF
   ((enable_nonebot)) && \
     data_dirs+=(
       "$data_root/nonebot/data"
-      "$data_root/nonebot/plugins"
-      "$data_root/nonebot/site-packages"
       "$data_root/nonebot/cache"
+      "$data_root/nonebot/project"
     )
   ((enable_official_nonebot)) && \
     data_dirs+=(
       "$data_root/nonebot-qqofficial/data"
-      "$data_root/nonebot-qqofficial/plugins"
-      "$data_root/nonebot-qqofficial/site-packages"
+      "$data_root/nonebot-qqofficial/cache"
+      "$data_root/nonebot-qqofficial/project"
     )
   ((enable_official_direct)) && data_dirs+=("$data_root/gscore-qqofficial")
   if ((use_botshepherd)); then
@@ -2909,6 +3343,41 @@ EOF
     sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" "${data_dirs[@]}"
   fi
   mark_data_root "$data_root"
+
+  local personal_project="${data_root}/nonebot/project"
+  local official_project="${data_root}/nonebot-qqofficial/project"
+  local personal_mimo_port="${MIMO_PERSONAL_PORT:-18081}"
+  local official_mimo_port="${MIMO_OFFICIAL_PORT:-18082}"
+  local command_start
+  command_start="$(env_value NONEBOT_COMMAND_START "$env_tmp")"
+  command_start="${command_start:-/}"
+  if ((enable_nonebot)); then
+    write_official_nonebot_environment \
+      personal "${personal_project}/.env.prod" "$personal_masters" \
+      NoneBot2 "$gscore_ws_token" "$command_start" personal
+    log "按 NoneBot 官方 CLI 流程生成个人 QQ 项目"
+    prepare_official_nonebot_instance \
+      personal \
+      "$([[ "$personal_adapter" == "nonebot" ]] && printf true || printf false)" \
+      "$personal_project" "${personal_project}/.env.prod" \
+      "$data_root/nonebot/data" "$data_root/nonebot/cache" \
+      nag-nonebot-personal nag-nonebot nonebot nag-net "$personal_mimo_port" \
+      /etc/mimo-console-agent/personal.token local/nag-nonebot-personal
+  fi
+  if ((enable_official_nonebot)); then
+    write_official_nonebot_environment \
+      official "${official_project}/.env.prod" "$qq_admin_ids" \
+      NoneBot2-QQOfficial "$gscore_ws_token" "$command_start" official \
+      "$qq_app_id" "$qq_app_secret" "$qq_token" "$qq_is_sandbox"
+    log "按 NoneBot 官方 CLI 流程生成 QQ 官方项目"
+    prepare_official_nonebot_instance \
+      official true "$official_project" "${official_project}/.env.prod" \
+      "$data_root/nonebot-qqofficial/data" \
+      "$data_root/nonebot-qqofficial/cache" \
+      nag-nonebot-official nag-nonebot-qqofficial nonebot-qqofficial \
+      nag-net "$official_mimo_port" /etc/mimo-console-agent/official.token \
+      local/nag-nonebot-official
+  fi
   if ((enable_official_direct)); then
     chown 10001:10001 "$data_root/gscore-qqofficial" 2>/dev/null \
       || sudo chown 10001:10001 "$data_root/gscore-qqofficial"
@@ -2973,13 +3442,6 @@ EOF
       || ! guided_service_exists botshepherd; }; then
     log "拉取 BotShepherd 镜像"
     guided_compose pull botshepherd
-  fi
-  if ((enable_nonebot || enable_official_nonebot)) \
-    && { ((force_reconcile || nonebot_added || official_changed)) \
-      || { ((enable_nonebot)) && ! guided_service_exists nonebot; } \
-      || { ((enable_official_nonebot)) && ! guided_service_exists nonebot-qqofficial; }; }; then
-    log "构建共享 NoneBot 镜像"
-    guided_compose build nonebot
   fi
   if ((enable_official_direct)) \
     && { ((force_reconcile || official_changed)) \
@@ -3107,22 +3569,36 @@ PY
 
   local start_services=(gscore)
   ((enable_astrbot)) && start_services+=(astrbot)
-  ((enable_nonebot)) && start_services+=(nonebot)
   ((use_botshepherd)) && start_services+=(botshepherd)
   guided_compose up -d "${start_services[@]}"
+  if ((enable_nonebot)); then
+    if guided_service_exists nonebot; then
+      log "移除旧版 NAG 自定义 NoneBot 服务"
+      guided_compose rm --stop --force nonebot >/dev/null
+    fi
+    log "通过 nb docker build/up 启动个人 QQ NoneBot"
+    official_nonebot_cli "$personal_project" nag-nonebot-personal build
+    official_nonebot_cli "$personal_project" nag-nonebot-personal up -d
+  elif [[ -f "${personal_project}/docker-compose.yml" ]]; then
+    official_nonebot_cli "$personal_project" nag-nonebot-personal down
+  fi
   local official_reconfigure=0
   ((force_reconcile || official_changed || official_settings_changed \
     || shared_settings_changed)) && official_reconfigure=1
   local official_check_since="$apply_started_at"
   if ((enable_official_nonebot)); then
-    if ((official_reconfigure)) || ! guided_service_exists nonebot-qqofficial; then
-      guided_compose up -d \
-        --no-deps --force-recreate nonebot-qqofficial
-      official_reconfigure=1
-    else
-      guided_compose up -d --no-deps nonebot-qqofficial
+    if guided_service_exists nonebot-qqofficial; then
+      log "移除旧版 NAG 自定义 QQ 官方 NoneBot 服务"
+      guided_compose rm --stop --force nonebot-qqofficial >/dev/null
     fi
+    log "通过 nb docker build/up 启动 QQ 官方 NoneBot"
+    official_nonebot_cli "$official_project" nag-nonebot-official build
+    official_nonebot_cli "$official_project" nag-nonebot-official up -d
+    official_reconfigure=1
   elif ((enable_official_direct)); then
+    if [[ -f "${official_project}/docker-compose.yml" ]]; then
+      official_nonebot_cli "$official_project" nag-nonebot-official down
+    fi
     if ((official_reconfigure)) || ! guided_service_exists gscore-qqofficial; then
       guided_compose up -d \
         --no-deps --force-recreate gscore-qqofficial
@@ -3130,6 +3606,8 @@ PY
     else
       guided_compose up -d --no-deps gscore-qqofficial
     fi
+  elif [[ -f "${official_project}/docker-compose.yml" ]]; then
+    official_nonebot_cli "$official_project" nag-nonebot-official down
   fi
   if ((use_personal)); then
     guided_compose up -d napcat
@@ -3244,11 +3722,10 @@ PY
     for ((attempt = 1; attempt <= 60; attempt++)); do
       local official_nb_logs
       official_nb_logs="$(
-        guided_compose logs \
-          --since "$official_check_since" --no-color nonebot-qqofficial \
-          2>/dev/null || true
+        "$DOCKER_BIN" logs --since "$official_check_since" \
+          nag-nonebot-qqofficial 2>/dev/null || true
       )"
-      if [[ "$official_nb_logs" == *"Bot "*" connected"* \
+      if [[ "$official_nb_logs" == *"EventType.READY"* \
         && "$official_nb_logs" == *"与[gsuid-core]成功连接"* ]]; then
         break
       fi
@@ -3259,7 +3736,8 @@ PY
     done
     ((attempt <= 60)) || die "QQ 官方 NoneBot 未完成两条连接"
   elif ((enable_official_nonebot)); then
-    guided_service_running nonebot-qqofficial \
+    [[ "$("$DOCKER_BIN" inspect --format '{{.State.Running}}' \
+      nag-nonebot-qqofficial 2>/dev/null || true)" == "true" ]] \
       || die "QQ 官方 NoneBot 未在运行"
   fi
 
@@ -3273,6 +3751,24 @@ print(config.get("REGISTER_CODE",""),end="")
 ' 2>/dev/null || true
   )"
   guided_compose ps
+  if ((enable_nonebot)); then
+    official_nonebot_cli "$personal_project" nag-nonebot-personal ps
+  fi
+  if ((enable_official_nonebot)); then
+    official_nonebot_cli "$official_project" nag-nonebot-official ps
+  fi
+  local personal_mimo_setup_token=""
+  local official_mimo_setup_token=""
+  if ((enable_nonebot)); then
+    personal_mimo_setup_token="$(
+      wait_mimo_setup_token nag-nonebot || true
+    )"
+  fi
+  if ((enable_official_nonebot)); then
+    official_mimo_setup_token="$(
+      wait_mimo_setup_token nag-nonebot-qqofficial || true
+    )"
+  fi
   mv -f "$env_tmp" "$env_file"
   chmod 600 "$env_file"
   if ((use_personal)); then
@@ -3288,6 +3784,22 @@ GsCore：http://${bind_ip}:${gscore_port}/app/
 GsCore 注册码：${register_code:-请查看 $data_root/gscore/data/config.json}
 私有配置：$env_file
 EOF
+  if ((enable_nonebot)); then
+    printf '个人 QQ Mimo Console：http://127.0.0.1:%s/mimo-console/\n' \
+      "$personal_mimo_port"
+    if [[ -n "$personal_mimo_setup_token" ]]; then
+      printf '个人 QQ Mimo Console 初始化令牌：%s\n' \
+        "$personal_mimo_setup_token"
+    fi
+  fi
+  if ((enable_official_nonebot)); then
+    printf 'QQ 官方 Mimo Console：http://127.0.0.1:%s/mimo-console/\n' \
+      "$official_mimo_port"
+    if [[ -n "$official_mimo_setup_token" ]]; then
+      printf 'QQ 官方 Mimo Console 初始化令牌：%s\n' \
+        "$official_mimo_setup_token"
+    fi
+  fi
   if ((use_personal)); then
     printf 'NapCat：http://%s:%s\n' "$bind_ip" "$napcat_port"
     if [[ -n "$napcat_webui_token" ]]; then
@@ -3541,12 +4053,78 @@ nonebot_plugin_mode() {
   local -a instance_states=()
   local -a selected=()
   local -A seen_plugin_dirs=()
+  local official_project
+  local official_label
+  local official_port
+  local official_container
+  local official_state
+  local official_runtime_port
+  local official_count=0
+  local official_env_file
 
   command -v "$DOCKER_BIN" >/dev/null 2>&1 || \
     die "未检测到 Docker，无法发现 NoneBot 实例"
   "$DOCKER_BIN" info >/dev/null 2>&1 || \
     die "无法连接 Docker 守护进程"
 
+  for official_project in nag-nonebot-personal nag-nonebot-official; do
+    official_container="$(
+      "$DOCKER_BIN" ps -aq \
+        --filter "label=com.docker.compose.project=${official_project}" \
+        --filter "label=com.docker.compose.service=nonebot" \
+        | head -n 1
+    )"
+    [[ -n "$official_container" ]] || continue
+    official_count=$((official_count + 1))
+    official_env_file=""
+    if [[ "$official_project" == "nag-nonebot-personal" ]]; then
+      official_label="个人 QQ / OneBot V11"
+      official_port=18081
+      official_env_file="$(newest_env_file_for_project nag)"
+      if [[ -n "$official_env_file" ]]; then
+        official_port="$(
+          env_value MIMO_PERSONAL_PORT "$official_env_file" || true
+        )"
+        official_port="${official_port:-18081}"
+      fi
+    else
+      official_label="QQ 官方机器人"
+      official_port=18082
+      official_env_file="$(newest_env_file_for_project nag-qqofficial)"
+      [[ -n "$official_env_file" ]] || \
+        official_env_file="$(newest_env_file_for_project nag)"
+      if [[ -n "$official_env_file" ]]; then
+        official_port="$(
+          env_value MIMO_OFFICIAL_PORT "$official_env_file" || true
+        )"
+        official_port="${official_port:-18082}"
+      fi
+    fi
+    official_runtime_port="$(
+      "$DOCKER_BIN" port "$official_container" 8080/tcp 2>/dev/null \
+        | head -n 1
+    )"
+    [[ -z "$official_runtime_port" ]] || \
+      official_port="${official_runtime_port##*:}"
+    official_state="$(
+      "$DOCKER_BIN" inspect --format '{{.State.Status}}' "$official_container"
+    )"
+    printf '  - %s（%s）：http://127.0.0.1:%s/mimo-console/\n' \
+      "$official_label" "$official_state" "$official_port"
+  done
+
+  if ((official_count > 0)); then
+    if [[ -n "$plugin_input" || -n "$plugin_import" ]]; then
+      warn "检测到官方 Docker NoneBot 项目；--plugin/--plugin-import 不再直接改容器，请在上面的 Mimo Console 中安装、更新、卸载和配置插件"
+    else
+      log "检测到官方 Docker NoneBot 项目；插件与依赖统一由 Mimo Console 管理"
+    fi
+    printf '远程服务器默认仅监听本机；可用 SSH 端口转发后在浏览器访问，例如：\n'
+    printf '  ssh -L 18081:127.0.0.1:18081 -L 18082:127.0.0.1:18082 <服务器>\n'
+    return 0
+  fi
+
+  warn "未检测到官方 Docker NoneBot 项目，将进入旧版 /app/plugins 兼容流程"
   mapfile -t container_ids < <("$DOCKER_BIN" ps -aq)
   for container_id in "${container_ids[@]}"; do
     service_name="$(
@@ -3776,6 +4354,10 @@ nonebot_plugin_mode() {
 }
 
 choose_mode
+
+if [[ "$MODE" != "status" ]]; then
+  acquire_installer_lock
+fi
 
 if [[ "$MODE" == "status" ]]; then
   status_mode
@@ -4164,6 +4746,7 @@ GSCORE_PORT=$GSCORE_PORT
 ASTRBOT_WEBUI_PORT=$ASTRBOT_WEBUI_PORT
 BOTSHEPHERD_WEBUI_PORT=$BOTSHEPHERD_WEBUI_PORT
 NAPCAT_WEBUI_PORT=$NAPCAT_WEBUI_PORT
+MIMO_PERSONAL_PORT=${MIMO_PERSONAL_PORT:-18081}
 NAPCAT_UID=$NAPCAT_UID
 NAPCAT_GID=$NAPCAT_GID
 NAPCAT_MAC=$NAPCAT_MAC
@@ -4204,9 +4787,8 @@ if [[ "$FRAMEWORK_KIND" == "astrbot" ]]; then
 elif [[ "$FRAMEWORK_KIND" == "nonebot" ]]; then
   DATA_DIRS+=(
     "$DATA_ROOT/nonebot/data"
-    "$DATA_ROOT/nonebot/plugins"
-    "$DATA_ROOT/nonebot/site-packages"
     "$DATA_ROOT/nonebot/cache"
+    "$DATA_ROOT/nonebot/project"
   )
 fi
 if ((USE_BOTSHEPHERD)); then
@@ -4223,6 +4805,24 @@ if ! mkdir -p "${DATA_DIRS[@]}" 2>/dev/null; then
   sudo install -d -m 0755 -o "$NAPCAT_UID" -g "$NAPCAT_GID" "${DATA_DIRS[@]}"
 fi
 mark_data_root "$DATA_ROOT"
+
+PERSONAL_NONEBOT_PROJECT="$DATA_ROOT/nonebot/project"
+PERSONAL_MIMO_PORT="${MIMO_PERSONAL_PORT:-18081}"
+if [[ "$FRAMEWORK_KIND" == "nonebot" ]]; then
+  write_official_nonebot_environment \
+    personal "${PERSONAL_NONEBOT_PROJECT}/.env.prod" "$NAPCAT_MASTER_QQ" \
+    NoneBot2 "$GSCORE_WS_TOKEN" \
+    "$(env_value NONEBOT_COMMAND_START "$tmp_env")" personal
+  log "按 NoneBot 官方 CLI 流程生成个人 QQ 项目"
+  prepare_official_nonebot_instance \
+    personal \
+    "$([[ "$ADAPTER_KIND" == "nonebot" ]] && printf true || printf false)" \
+    "$PERSONAL_NONEBOT_PROJECT" "${PERSONAL_NONEBOT_PROJECT}/.env.prod" \
+    "$DATA_ROOT/nonebot/data" "$DATA_ROOT/nonebot/cache" \
+    nag-nonebot-personal nag-nonebot nonebot nag_nag-net \
+    "$PERSONAL_MIMO_PORT" /etc/mimo-console-agent/personal.token \
+    local/nag-nonebot-personal
+fi
 
 for data_dir in "${DATA_DIRS[@]}"; do
   [[ -w "$data_dir" ]] || die "$data_dir 对 UID $NAPCAT_UID 不可写；请修正属主或权限"
@@ -4346,7 +4946,7 @@ wait_nonebot_ready() {
 
   log "等待 NoneBot OneBot v11 监听（端口 8080）"
   for ((attempt = 1; attempt <= 60; attempt++)); do
-    if compose exec -T nonebot python -c \
+    if "$DOCKER_BIN" exec nag-nonebot python -c \
       'import socket; connection = socket.create_connection(("127.0.0.1", 8080), timeout=3); connection.close()' \
       >/dev/null 2>&1; then
       return 0
@@ -4354,7 +4954,7 @@ wait_nonebot_ready() {
     sleep 2
   done
 
-  compose logs --tail=100 nonebot || true
+  "$DOCKER_BIN" logs --tail=100 nag-nonebot || true
   die "NoneBot 120 秒内未在端口 8080 就绪"
 }
 
@@ -4429,8 +5029,6 @@ if [[ "$FRAMEWORK_KIND" == "nonebot" ]]; then
   if ((USE_BOTSHEPHERD)); then
     compose pull botshepherd
   fi
-  log "构建 NoneBot 镜像"
-  compose build nonebot
 else
   compose pull
 fi
@@ -4492,8 +5090,13 @@ esac
 if [[ "$FRAMEWORK_KIND" == "nonebot" ]]; then
   log "配置 NapCat 反向 WebSocket 客户端（连接 NoneBot）"
   compose --profile init run --rm nonebot-onebot-init
-  log "启动 NoneBot"
-  compose up -d nonebot
+  if [[ -n "$(compose ps -aq nonebot 2>/dev/null || true)" ]]; then
+    log "移除旧版 NAG 自定义 NoneBot 服务"
+    compose rm --stop --force nonebot >/dev/null
+  fi
+  log "通过 nb docker build/up 启动个人 QQ NoneBot"
+  official_nonebot_cli "$PERSONAL_NONEBOT_PROJECT" nag-nonebot-personal build
+  official_nonebot_cli "$PERSONAL_NONEBOT_PROJECT" nag-nonebot-personal up -d
   wait_nonebot_ready
   if ((USE_BOTSHEPHERD)); then
     compose up -d botshepherd
@@ -4571,7 +5174,16 @@ if ((USE_BOTSHEPHERD)); then
     warn "BotShepherd 已启动，但当前日志中没有初始 WebUI 密码；复用已有 BotShepherd 数据时属正常现象"
   fi
 fi
+MIMO_SETUP_TOKEN=""
+if [[ "$FRAMEWORK_KIND" == "nonebot" ]]; then
+  MIMO_SETUP_TOKEN="$(
+    wait_mimo_setup_token nag-nonebot || true
+  )"
+fi
 compose ps
+if [[ "$FRAMEWORK_KIND" == "nonebot" ]]; then
+  official_nonebot_cli "$PERSONAL_NONEBOT_PROJECT" nag-nonebot-personal ps
+fi
 
 # Deployment succeeded; only now replace the previous private environment and
 # shared NapCat identity, then point the printed status command at them.
@@ -4594,6 +5206,13 @@ WebUI：
   GsCore 注册码: ${GSCORE_REGISTER_CODE:-未读取到，请查看 $DATA_ROOT/gscore/data/config.json 中的 REGISTER_CODE}
   NapCat: http://${BIND_IP}:${NAPCAT_WEBUI_PORT}
 EOF
+if [[ "$FRAMEWORK_KIND" == "nonebot" ]]; then
+  printf '  Mimo Console: http://127.0.0.1:%s/mimo-console/\n' \
+    "$PERSONAL_MIMO_PORT"
+  if [[ -n "$MIMO_SETUP_TOKEN" ]]; then
+    printf '  Mimo Console 初始化令牌: %s\n' "$MIMO_SETUP_TOKEN"
+  fi
+fi
 if [[ -n "$NAPCAT_WEBUI_TOKEN" ]]; then
   printf '  NapCat Token: %s\n' "$NAPCAT_WEBUI_TOKEN"
   printf '  NapCat 登录地址: http://%s:%s/webui?token=%s\n' \

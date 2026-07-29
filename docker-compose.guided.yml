@@ -198,7 +198,7 @@ services:
       service: gscore-plugin-init
 
   guided-onebot-init:
-    image: ${NONEBOT_IMAGE:-nag-nonebot:local}
+    image: python:3.12-slim
     container_name: nag-guided-onebot-init
     profiles:
       - init

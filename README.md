@@ -157,11 +157,13 @@ cd NAG
 bash install.sh
 ```
 
-直接运行脚本会先显示“安装与维护”主菜单。选择“安装、更新或调整机器人部署”后，脚本显示三套大方案的流程图，再选择唯一的 GScore 处理方和可选框架；也可以从主菜单直接进入 NoneBot 插件安装、状态查看、BotShepherd 端口管理或卸载。AstrBot 与 NoneBot 可以同时安装，两种 QQ 接入也会自动共用一套 GsCore。脚本会自动：
+直接运行脚本会先显示“安装与维护”主菜单。选择“安装、更新或调整机器人部署”后，脚本显示三套大方案的流程图，再选择唯一的 GScore 处理方和可选框架；也可以从主菜单直接进入 NoneBot 的 Mimo Console、状态查看、BotShepherd 端口管理或卸载。AstrBot 与 NoneBot 可以同时安装，两种 QQ 接入也会自动共用一套 GsCore。脚本会自动：
 
 - 创建持久化目录并生成私有配置；
 - 配置 GsCore 主人、框架管理员和共享 `WS_TOKEN`；
 - 创建 NapCat、AstrBot、NoneBot、BotShepherd 之间的连接；
+- 对每个 NoneBot 实例调用官方 `nb adapter install`、`nb plugin install`、`nb docker generate`、`nb docker build` 和 `nb docker up` 流程；个人 QQ 使用 `nonebot-adapter-onebot`，QQ 官方机器人使用 `nonebot-adapter-qq`；
+- 在官方 NoneBot 项目中内置 Mimo Console，并注册受限的宿主机 Agent，使 WebUI 可以安装、更新、卸载插件以及重建、健康检查和回滚对应实例；
 - 复用 NapCat MAC 与快速登录账号，降低容器重建后重新登录的概率；
 - 按需克隆鸣潮插件套件，安装 Playwright、OpenCV、字体、拼音和 Chromium 等依赖。
 
@@ -198,6 +200,7 @@ bash install.sh
 | NapCat WebUI Token | 脚本循环读取启动日志 | 扫码登录后 Token 可能刷新，以最新日志为准 |
 | AstrBot 初始密码 | 新安装时等待启动日志，最长 120 秒 | 明文只存在于当前容器首次启动日志 |
 | BotShepherd 初始密码 | 脚本循环读取启动日志 | 复用已有数据时继续使用之前设置的密码 |
+| Mimo Console 初始化令牌 | 安装 NoneBot 后自动从本次启动日志读取并打印 | 仅在管理员尚未创建时生成，并且只在本次启动有效 |
 | QQ 官方机器人凭据 | 用户输入后写入私有环境文件 | 不写入 README、示例文件或安装摘要 |
 
 AstrBot 的 `cmd_config.json` 只保存 MD5/PBKDF2 密码哈希，不能从配置文件恢复明文。若复用旧数据且当前容器日志中已没有初始密码，请使用之前设置的密码或按 AstrBot 官方方式重置，而不是删除整个数据目录。
@@ -546,46 +549,22 @@ ww下载全部资源
 
 ## NoneBot 插件
 
-个人 NoneBot 与官方 NoneBot 共用镜像但插件目录相互独立，日常装插件不需要重建镜像。推荐使用安装器自动发现所有带 `/app/plugins` 持久化挂载的 NAG NoneBot 容器；同时存在个人 QQ 和官方 QQ 实例时，安装器会列出容器名、协议、状态和插件目录，再让你选择其中一个或全部：
+NAG 中的每个 NoneBot 都是独立的官方 `nb-cli-plugin-docker` 项目。个人 QQ 项目默认位于 `${DATA_ROOT}/nonebot/project`，双通道中的 QQ 官方项目位于 `${DATA_ROOT}/nonebot-qqofficial/project`。每个项目都有自己的 `pyproject.toml`、`uv.lock`、官方 `Dockerfile` 和官方 `docker-compose.yml`，因此插件和依赖不会在两个机器人之间互相污染。
 
-直接运行 `bash install.sh`，在顶层“安装与维护”菜单中选择“安装 NoneBot 插件”即可；该入口不依赖 `.installer/guided.state`。下面的命令行方式仍可用于自动化或直接进入插件安装流程。
+NAG 不修改官方生成的两个核心文件，而是额外生成 `Dockerfile.nag` 与 `docker-compose.nag.yml`，只补充媒体系统库、按需安装 Playwright Chromium、数据/缓存共享、NAG 网络和 Mimo Agent。后续重跑脚本时仍会调用官方命令重新生成项目。包含 QQ 凭据的 `.env.prod`、Agent 令牌、临时虚拟环境和部署元数据均会被排除在镜像构建上下文之外；运行时只读挂载所需文件，避免凭据进入不可变镜像层。
 
-```bash
-# PyPI 包名、固定版本和 extras 均可
-bash install.sh --mode nonebot-plugin --plugin nonebot-plugin-parser
-bash install.sh --mode nonebot-plugin --plugin 'nonebot-plugin-parser[htmlrender]==2.6.6'
+日常插件管理统一使用内置的 **Mimo Console**：
 
-# GitHub 仓库：克隆到所选实例的持久化插件目录，自动识别 nonebot_plugin_* 包
-bash install.sh --mode nonebot-plugin \
-  --plugin https://github.com/MimoKit/nonebot-plugin-parser
-```
+- 个人 QQ：`http://127.0.0.1:18081/mimo-console/`
+- QQ 官方机器人：`http://127.0.0.1:18082/mimo-console/`
 
-无人值守时必须明确指定容器名或 `all`：
+直接运行 `bash install.sh`，在顶层菜单选择“管理 NoneBot 插件（Mimo Console）”，脚本会列出实际存在的官方 Docker 实例和入口。WebUI 中对插件执行安装、更新或卸载时，受限的宿主机 Agent 会更新该实例自己的 `pyproject.toml` 与 `uv.lock`，构建新镜像，切换容器并做健康检查；失败则恢复旧锁文件和旧镜像。这样不会在运行中的容器里临时 `pip install`，容器重建后依赖也不会丢失。
 
-```bash
-bash install.sh --mode nonebot-plugin --yes \
-  --plugin nonebot-plugin-parser \
-  --plugin-target nag-nonebot
-```
-
-少数仓库不使用标准的 `nonebot_plugin_*` 包名时，可追加 `--plugin-import package.module`。加 `--dry-run` 可以只查看实例选择和安装计划。脚本会更新 `plugins.txt` 或 Git 仓库、重启所选容器，并等待依赖摘要与健康检查完成；依赖安装或插件加载失败时会打印容器日志并返回失败。NoneBot 插件会以机器人进程权限执行，只应安装你信任的包或仓库。
+首次安装且尚未创建管理员时，安装脚本会从当前 NoneBot 容器的本次启动日志中提取 Mimo Console 初始化令牌，并紧跟在对应 WebUI 地址后打印。管理员已经初始化时不会再次显示旧令牌；删除认证数据重新初始化后，重跑安装器可获取本次启动生成的新令牌。
 
 个人 QQ 路线会把 `${DATA_ROOT}/nonebot/cache` 同时挂载到 NoneBot 与 NapCat 的 `/root/.cache/nonebot2`，其中 NapCat 使用只读挂载。这样插件向 OneBot 发送本地图片、语音或视频路径时，NapCat 能读取同一文件；既避免跨容器 `ENOENT`，也无需对大媒体启用 Base64。该共享只覆盖 NoneBot 缓存，不包含插件配置、凭据或其他持久化数据。
 
-仍可手动管理插件，三种来源对应三种装法（装完 `docker restart` 对应容器生效）：
-
-| 插件来源 | 操作 |
-| --- | --- |
-| PyPI 上架插件 | 在插件目录的 `plugins.txt` 加一行包名，如 `nonebot-plugin-withdraw==0.5.0` |
-| GitHub 第三方（可 pip 安装） | `plugins.txt` 加一行 `git+https://... nonebot_plugin_xxx`（第二列为导入名） |
-| GitHub 第三方（源码仓库） | 直接 `git clone` 进插件目录，自动识别内层 `nonebot_plugin_*` 包 |
-| 补装插件未声明的依赖 | `plugins.txt` 加一行 `包名 -`（第二列写 `-` 表示只安装不作为插件加载） |
-
-插件目录位置：个人 NB 为 `$DATA_ROOT/nonebot/plugins/`，官方 NB 为 `$DATA_ROOT/nonebot-qqofficial/plugins/`；单文件插件（`xxx.py`）和含 `__init__.py` 的包目录也可直接放入。
-
-依赖处理：启动时汇总 `plugins.txt` 与各插件仓库的 `requirements.txt` / `pyproject.toml` 依赖声明，安装到挂载的 `site-packages` 持久目录（重建镜像不丢失）；插件声明、镜像内 `constraints.txt` 和 Python 主次版本都未变化时跳过安装，日常启动零开销。核心包版本由镜像内约束锁定，插件依赖不会升级 nonebot2 与适配器；重建镜像导致约束或 Python 版本变化时会自动重新解析持久依赖。大陆网络下 `NONEBOT_PYTHON_INDEX` 会随安装器的网络模式自动指向国内 PyPI 镜像。依赖安装失败会在日志中提示并可能影响本批次发生依赖变化的目录插件，但不会阻断机器人主体启动。`nonebot-plugin-parser[all]` 仍只声明 Python 包依赖；其媒体合并和 emoji 本地渲染所需的 `ffmpeg`、Cairo 系统组件已预装到 NAG NoneBot 镜像。
-
-需要编译型重依赖或希望依赖进镜像时，仍可使用传统方式：`nonebot/requirements.txt` 加包名、`nonebot/bot.py` 加 `nonebot.load_plugin(...)`，然后重跑 `bash install.sh` 重建（该方式对两个 NoneBot 实例同时生效）。
+镜像扩展预装 `ffmpeg`、Cairo 等常用媒体系统库；当锁定依赖中存在 Playwright 时才安装 Chromium。因此 `nonebot-plugin-parser[all]` 这类插件的 Python 依赖和浏览器依赖都会进入同一个可回滚镜像，而不是与 GsCore 共用不兼容的 Python 环境。
 
 注意：个人 NB 是 OneBot v11 适配器，官方 NB 是 adapter-qq——给官方实例装插件前先确认其支持 QQ 官方适配器；AstrBot 与个人 NB 同时收到普通消息，避免两边安装功能重叠的插件。
 

@@ -85,14 +85,11 @@ services:
       - ${DATA_ROOT:-/opt/nag-data}/napcat/plugins:/app/napcat/plugins
       - ${DATA_ROOT:-/opt/nag-data}/napcat/qq:/app/.config/QQ
       - ${DATA_ROOT:-/opt/nag-data}/nonebot/cache:/root/.cache/nonebot2:ro
-    depends_on:
-      nonebot:
-        condition: service_healthy
     networks:
       - nag-net
 
   nonebot-onebot-init:
-    image: ${NONEBOT_IMAGE:-nag-nonebot:local}
+    image: python:3.12-slim
     container_name: nag-nonebot-onebot-init
     profiles:
       - init
