@@ -742,6 +742,35 @@ official_nonebot_cli() {
   fi
 }
 
+restart_official_nonebot_instance() {
+  local project_dir="$1"
+  local compose_project="$2"
+  local container_name="$3"
+  local state=""
+
+  as_root "$DOCKER_BIN" compose \
+    --project-directory "$project_dir" \
+    -p "$compose_project" \
+    -f "${project_dir}/docker-compose.yml" \
+    -f "${project_dir}/docker-compose.nag.yml" \
+    restart nonebot
+
+  for ((attempt = 1; attempt <= 90; attempt++)); do
+    state="$(
+      as_root "$DOCKER_BIN" inspect \
+        --format '{{.State.Running}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+        "$container_name" 2>/dev/null || true
+    )"
+    if [[ "$state" == "true|healthy" || "$state" == "true|none" ]]; then
+      return 0
+    fi
+    sleep 2
+  done
+
+  as_root "$DOCKER_BIN" logs --tail 120 "$container_name" 2>/dev/null || true
+  die "官方 NoneBot Compose 服务重启后未恢复健康：${compose_project}"
+}
+
 wait_mimo_setup_token() {
   local container_name="$1"
   local started_at
@@ -2188,7 +2217,7 @@ PY
       if [[ "$nonebot_logs" == *"EventType.READY"* ]]; then
         qq_gateway_ready=1
       fi
-      if [[ "$nonebot_logs" == *"与[gsuid-core]成功连接"* ]]; then
+      if [[ "$nonebot_logs" == *"[SUCCESS] GenshinUID"*"Bot_ID:"* ]]; then
         gscore_adapter_ready=1
       fi
       if ((qq_gateway_ready && gscore_adapter_ready)); then
@@ -3585,6 +3614,7 @@ PY
   local official_reconfigure=0
   ((force_reconcile || official_changed || official_settings_changed \
     || shared_settings_changed)) && official_reconfigure=1
+  local personal_check_since="$apply_started_at"
   local official_check_since="$apply_started_at"
   if ((enable_official_nonebot)); then
     if guided_service_exists nonebot-qqofficial; then
@@ -3644,6 +3674,28 @@ PY
     if ((attempt > 90)); then
       guided_compose logs --tail=120 gscore || true
       die "插件初始化后 GsCore WebUI 未就绪"
+    fi
+  fi
+
+  # GenshinUID can leave its scheduled reconnect coroutine waiting indefinitely
+  # when GsCore is stopped while game plugins or Chromium are initialized.
+  # Restart only the selected NoneBot GsCore adapters after the final GsCore
+  # process is healthy, then validate connections from this fresh log window.
+  if ((gscore_restarted)); then
+    if ((enable_nonebot)) && [[ "$personal_adapter" == "nonebot" ]]; then
+      log "GsCore 已完成重启；重启个人 QQ NoneBot 以恢复 GenshinUID 连接"
+      personal_check_since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      restart_official_nonebot_instance \
+        "$personal_project" nag-nonebot-personal nag-nonebot
+    fi
+    if ((enable_official_nonebot)); then
+      log "GsCore 已完成重启；重启 QQ 官方 NoneBot 以恢复 GenshinUID 连接"
+      official_check_since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      restart_official_nonebot_instance \
+        "$official_project" nag-nonebot-official nag-nonebot-qqofficial
+    elif ((enable_official_direct)); then
+      official_check_since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      guided_compose restart gscore-qqofficial
     fi
   fi
 
@@ -3718,6 +3770,21 @@ PY
     guided_service_running gscore-qqofficial \
       || die "gscore-qqofficial 未在运行"
   fi
+  if ((enable_nonebot)) && [[ "$personal_adapter" == "nonebot" ]] \
+    && ((personal_adapter_reconfigure || gscore_restarted)); then
+    for ((attempt = 1; attempt <= 60; attempt++)); do
+      local personal_nb_logs
+      personal_nb_logs="$(
+        "$DOCKER_BIN" logs --since "$personal_check_since" \
+          nag-nonebot 2>/dev/null || true
+      )"
+      if [[ "$personal_nb_logs" == *"[SUCCESS] GenshinUID"*"Bot_ID: NoneBot2"* ]]; then
+        break
+      fi
+      sleep 2
+    done
+    ((attempt <= 60)) || die "个人 QQ NoneBot 的 GenshinUID 未连接 GsCore"
+  fi
   if ((enable_official_nonebot && (official_reconfigure || gscore_restarted))); then
     for ((attempt = 1; attempt <= 60; attempt++)); do
       local official_nb_logs
@@ -3726,7 +3793,7 @@ PY
           nag-nonebot-qqofficial 2>/dev/null || true
       )"
       if [[ "$official_nb_logs" == *"EventType.READY"* \
-        && "$official_nb_logs" == *"与[gsuid-core]成功连接"* ]]; then
+        && "$official_nb_logs" == *"[SUCCESS] GenshinUID"*"Bot_ID: NoneBot2-QQOfficial"* ]]; then
         break
       fi
       if [[ "$official_nb_logs" == *"code=11298"* ]]; then
