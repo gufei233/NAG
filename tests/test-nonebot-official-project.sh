@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 test_root="${NAG_TEST_ROOT:-$(mktemp -d)}"
+expected_mimo_console_commit="acd83708b875245ba26617ed6cd7c622b59d1949"
 cleanup=1
 [[ -z "${NAG_TEST_ROOT:-}" ]] || cleanup=0
 if ((cleanup)); then
@@ -65,6 +66,21 @@ assert_contains() {
   }
 }
 
+assert_default_mimo_console_commit() {
+  local path="$1"
+  local actual
+  actual="$(
+    sed -n \
+      's/.*MIMO_CONSOLE_COMMIT:-\([0-9a-f]\{40\}\).*/\1/p' \
+      "$path"
+  )"
+  if [[ "$actual" != "$expected_mimo_console_commit" ]]; then
+    printf 'Unexpected Mimo Console commit in %s: %s\n' \
+      "$path" "${actual:-<missing>}" >&2
+    return 1
+  fi
+}
+
 prepare_project() {
   local kind="$1"
   local adapter="$2"
@@ -111,6 +127,12 @@ EOF
 
   assert_project "$kind" "$adapter" "$with_gs"
 }
+
+assert_default_mimo_console_commit "${repo_root}/install.sh"
+assert_default_mimo_console_commit \
+  "${repo_root}/scripts/prepare-nonebot-official-project.sh"
+assert_default_mimo_console_commit \
+  "${repo_root}/scripts/register-mimo-agent-instance.sh"
 
 prepare_project personal nonebot-adapter-onebot 18091 true
 prepare_project official nonebot-adapter-qq 18092 true

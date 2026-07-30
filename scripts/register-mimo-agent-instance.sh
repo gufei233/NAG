@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MIMO_CONSOLE_COMMIT="${MIMO_CONSOLE_COMMIT:-bfce00254a60008018a91e9b61dc3b785f315ed9}"
+MIMO_CONSOLE_COMMIT="${MIMO_CONSOLE_COMMIT:-acd83708b875245ba26617ed6cd7c622b59d1949}"
 MIMO_CONSOLE_GIT_URL="${MIMO_CONSOLE_GIT_URL:-https://github.com/gufei233/nonebot-plugin-mimo-console.git}"
 MIMO_AGENT_UV_BASE_IMAGE="${MIMO_AGENT_UV_BASE_IMAGE:-ghcr.io/astral-sh/uv:0.9.29-python3.12-bookworm-slim}"
 MIMO_AGENT_UV_GIT_IMAGE="${MIMO_AGENT_UV_GIT_IMAGE:-local/mimo-agent-uv-git:0.9.29-1}"
