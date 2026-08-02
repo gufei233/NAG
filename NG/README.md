@@ -2,7 +2,13 @@
 
 NapCat + GsCore 的轻量 Docker Compose 部署模板。
 
-也可以在仓库根目录运行 `bash install.sh`，然后选择第 3 种部署方式。交互式安装器会询问主人 QQ，将同一列表写入 GsCore 的 `masters` 和 NapCat 适配器，完成容器、插件和额外依赖初始化，自动配置 `ws://gscore:8765` 与共享 `WS_TOKEN`；结束时还会直接显示 GsCore 的首次注册 `REGISTER_CODE`。
+推荐在仓库根目录运行：
+
+```bash
+bash install.sh --mode napcat
+```
+
+这个预设就是 NG 轻量方案。安装器会询问主人 QQ，将同一列表写入 GsCore 的 `masters` 和 NapCat 适配器，完成容器、插件和额外依赖初始化，自动配置 `ws://gscore:8765` 与共享 `WS_TOKEN`；结束时还会直接显示 GsCore 的首次注册 `REGISTER_CODE`。
 
 本目录面向不需要 AstrBot / LLM / 多平台管理，只想让 NapCat 直接把 QQ 消息转发给 GsCore 的用户：
 
@@ -34,9 +40,9 @@ NG:  GsCore <-> NapCat 插件 <-> NapCatQQ
 - 希望通过 AstrBot 统一管理多个机器人能力；
 - 已经在使用 `astrbot_plugin_gscore_adapter`。
 
-## 快速开始
+## 手动 Compose 快速开始
 
-在仓库根目录执行：
+如果你不使用根目录的安装器，也可以直接维护本目录的 Compose 配置：
 
 ```bash
 cd NG
@@ -58,13 +64,15 @@ sed -i "s/^NAPCAT_UID=.*/NAPCAT_UID=$(id -u)/" .env
 sed -i "s/^NAPCAT_GID=.*/NAPCAT_GID=$(id -g)/" .env
 ```
 
-然后启动：
+然后先启动基础容器：
 
 ```bash
 docker compose config
 docker compose up -d
 docker compose ps
 ```
+
+此时只会运行 GsCore 与 NapCat。NapCat GScore 适配器需要再执行本目录的 init profile，或在 NapCat WebUI 中手动安装。
 
 ## 默认端口
 
@@ -127,13 +135,22 @@ NG 版不使用 AstrBot，也不需要配置 `ws://astrbot:6199/ws` 这类 OneBo
 /app/napcat/config  -> /opt/ng-data/napcat/config
 ```
 
-推荐方式：
+使用 `bash install.sh --mode napcat` 时，这一步由安装器自动完成。
+
+直接使用本目录 Compose 时，推荐运行固定版本的初始化任务：
+
+```bash
+docker compose --profile init run --rm napcat-gscore-adapter-init
+docker restart ng-napcat
+```
+
+初始化任务会下载 `.env` 中固定的 release zip，校验 SHA-256，在插件卷内原子替换旧目录，并写入连接地址、`WS_TOKEN` 和主人 QQ。
+
+如果你不想使用初始化任务，也可以在 NapCat WebUI 手动安装：
 
 ```text
 NapCat WebUI -> 插件管理 -> 上传/安装/启用 napcat-plugin-gscore-adapter
 ```
-
-也就是说：**推荐用户手动从 release 下载插件包，再通过 NapCat WebUI 或插件目录安装。** compose 只负责把插件目录挂载出来，不默认下载不固定版本的 release 资产。
 
 也可以从插件 release 下载 zip 后解压到宿主机：
 
@@ -144,21 +161,14 @@ unzip /path/to/napcat-plugin-gscore-adapter.zip \
 docker restart ng-napcat
 ```
 
-如果你已经拿到 release zip 的直链，也可以写入 `.env`：
+如果你要改用其他 release，请同时写入 `.env`：
 
 ```env
 NAPCAT_GSCORE_ADAPTER_ZIP_URL=https://github.com/xiowo/napcat-plugin-gscore-adapter/releases/download/<tag>/<asset>.zip
 NAPCAT_GSCORE_ADAPTER_SHA256=<对应 release zip 的 64 位 SHA-256>
 ```
 
-然后运行一次可选初始化任务：
-
-```bash
-docker compose --profile init run --rm napcat-gscore-adapter-init
-docker restart ng-napcat
-```
-
-仓库当前默认固定 v1.3.3 及其 GitHub 发布资产摘要。初始化任务会先校验 SHA-256，在插件卷内的临时目录解压，再原子替换旧目录；校验、解压或配置失败时会恢复此前版本。升级到其他 release 时必须同时修改下载地址和摘要。
+仓库当前默认固定 v1.3.3 及其 GitHub 发布资产摘要。升级到其他 release 时必须同时修改下载地址和摘要。
 
 ## 配置插件连接 GsCore
 

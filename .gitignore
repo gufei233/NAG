@@ -1,8 +1,11 @@
 .env
 **/.env
 .installer/
+.codex-backup-*/
 docker-compose.override.yml
 **/docker-compose.override.yml
 data/
 **/data/
 __pycache__/
+**/__pycache__/
+*.pyc
