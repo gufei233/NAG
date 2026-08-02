@@ -39,6 +39,9 @@ normalize_github_origin() {
     git+https://github.com/*)
       origin="${origin#git+}"
       ;;
+    https://*/https://github.com/*)
+      origin="https://github.com/${origin#*https://github.com/}"
+      ;;
   esac
   origin="${origin%/}"
   origin="${origin%.git}"
@@ -56,6 +59,9 @@ if [ -e "$target" ]; then
     "$(normalize_github_origin "$repo_url")" ]; then
     echo "目标目录 origin 与请求仓库不一致：$current_origin" >&2
     exit 66
+  fi
+  if [ "$current_origin" != "$repo_url" ]; then
+    git -C "$target" remote set-url origin "$repo_url"
   fi
   before_dependencies="$(dependency_fingerprint "$target")"
   git -C "$target" pull --ff-only

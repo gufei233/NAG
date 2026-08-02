@@ -41,15 +41,33 @@ def patch(source: Path, target: Path) -> None:
         ) from exc
 
     requirements_packages = [
+        "ARG PIP_INDEX_URL",
+        "ARG PLAYWRIGHT_DOWNLOAD_HOST",
+        "ARG NAG_DEBIAN_MIRROR",
         "",
         "# NAG extension: allow locked Git/VCS dependencies in the official wheel stage.",
+        'RUN if [ -n "$NAG_DEBIAN_MIRROR" ]; then \\',
+        "      find /etc/apt -type f \\( -name '*.list' -o -name '*.sources' \\) \\",
+        "        -exec sed -i \\",
+        '          -e "s|deb.debian.org|$NAG_DEBIAN_MIRROR|g" \\',
+        '          -e "s|security.debian.org|$NAG_DEBIAN_MIRROR|g" {} +; \\',
+        "    fi",
         "RUN apt-get update \\",
         "  && apt-get install --no-install-recommends -y ca-certificates git \\",
         "  && rm -rf /var/lib/apt/lists/*",
     ]
     final_packages = [
+        "ARG PIP_INDEX_URL",
+        "ARG PLAYWRIGHT_DOWNLOAD_HOST",
+        "ARG NAG_DEBIAN_MIRROR",
         "",
         "# NAG extension: baseline media libraries used by GS and common bot plugins.",
+        'RUN if [ -n "$NAG_DEBIAN_MIRROR" ]; then \\',
+        "      find /etc/apt -type f \\( -name '*.list' -o -name '*.sources' \\) \\",
+        "        -exec sed -i \\",
+        '          -e "s|deb.debian.org|$NAG_DEBIAN_MIRROR|g" \\',
+        '          -e "s|security.debian.org|$NAG_DEBIAN_MIRROR|g" {} +; \\',
+        "    fi",
         "RUN apt-get update \\",
         "  && apt-get install --no-install-recommends -y ca-certificates ffmpeg libcairo2 git \\",
         "  && rm -rf /var/lib/apt/lists/*",

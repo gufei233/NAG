@@ -13,11 +13,17 @@ readonly NAPCAT_COMPAT_IMAGE="mlikiowa/napcat-docker:v4.18.5"
 readonly NAPCAT_ADAPTER_LEGACY_LATEST_URL="https://github.com/xiowo/napcat-plugin-gscore-adapter/releases/latest/download/napcat-plugin-gscore-adapter.zip"
 readonly NAPCAT_ADAPTER_PINNED_URL="https://github.com/xiowo/napcat-plugin-gscore-adapter/releases/download/v1.3.3/napcat-plugin-gscore-adapter.zip"
 readonly NAPCAT_ADAPTER_PINNED_SHA256="1776762d0ed8d16ddb8228b98f599c5fa9d166c4a34df5bb0c8f1e2ddd2387ef"
-readonly BOTSHEPHERD_IMAGE_DEFAULT="ghcr.io/gufei233/botshepherd:v1.2.1-docker.1"
+readonly BOTSHEPHERD_IMAGE_DEFAULT="${BOTSHEPHERD_IMAGE:-ghcr.io/gufei233/botshepherd:v1.2.1-docker.1}"
 readonly GSCORE_QQOFFICIAL_COMMIT="2d582f6478a0c0d94aa31d7151c0acabce65ea21"
 readonly NAG_MIMO_CONSOLE_COMMIT="${MIMO_CONSOLE_COMMIT:-acd83708b875245ba26617ed6cd7c622b59d1949}"
 readonly NAG_MIMO_CONSOLE_REPOSITORY="${MIMO_CONSOLE_REPOSITORY:-gufei233/nonebot-plugin-mimo-console}"
 readonly NAG_MIMO_CONSOLE_GIT_URL="${MIMO_CONSOLE_GIT_URL:-https://github.com/gufei233/nonebot-plugin-mimo-console.git}"
+readonly CN_PYTHON_INDEX_DEFAULT="https://pypi.tuna.tsinghua.edu.cn/simple/"
+readonly CN_UV_PYTHON_INSTALL_MIRROR_DEFAULT="https://registry.npmmirror.com/-/binary/python-build-standalone"
+readonly CN_PLAYWRIGHT_DOWNLOAD_HOST_DEFAULT="https://registry.npmmirror.com/-/binary/playwright"
+readonly CN_DEBIAN_MIRROR_DEFAULT="mirrors.aliyun.com"
+readonly CN_APT_MIRROR_BASE_DEFAULT="https://mirrors.aliyun.com"
+readonly CN_GITHUB_PROXY_PREFIX_DEFAULT="https://ghfast.top/"
 readonly DATA_ROOT_MARKER_NAME=".nag-managed-data-root"
 readonly DATA_ROOT_MARKER_VALUE="NAG_DATA_ROOT_V1"
 readonly INSTALL_LOCK_DIR="${STATE_DIR}/install.lock"
@@ -190,8 +196,8 @@ NAG/NG 交互式部署与维护脚本。
   --master-qq QQ
                 GsCore 与 NapCat GScore 适配器的主人 QQ，多个用英文逗号分隔
   --bot-qq QQ   NapCat 登录的机器人 QQ，持久化后重建容器可快速登录
-  --cn          按中国大陆网络环境处理（Docker 用阿里云安装源、配置镜像加速、
-                鸣潮插件与 PyPI 使用国内源）
+  --cn          按中国大陆网络环境处理（覆盖 Docker、系统包、uv/Python/PyPI、
+                Playwright、GitHub 与已知插件仓库）
   --no-cn       强制按国际网络环境处理
   --target T    配合 --mode uninstall 使用：nag、ng、nag-qqofficial 或 all
   --plugin SPEC 仅兼容旧版 NAG NoneBot；官方 Docker 项目请在 Mimo Console 中管理
@@ -208,6 +214,10 @@ NAG/NG 交互式部署与维护脚本。
 QQ 官方凭据可通过环境变量 QQ_APP_ID、QQ_APP_SECRET、QQ_TOKEN（仅 NoneBot 路线）
 提供，以实现无人值守安装。个人 QQ 登录与 GsCore 管理员注册仍需在 WebUI 手动完成。
 安装前会自动检测 Docker 环境，缺失时可自动安装（大陆网络自动改用国内镜像源）。
+镜像可通过 NAG_APT_MIRROR_BASE、NAG_PYTHON_INDEX、NAG_UV_PYTHON_INSTALL_MIRROR、
+NAG_PLAYWRIGHT_DOWNLOAD_HOST、NAG_DEBIAN_MIRROR、NAG_GITHUB_PROXY_PREFIX 覆盖；
+除 NAG_PYTHON_INDEX 外，显式设为空字符串可分别禁用对应镜像。
+仅发布在 GHCR 的镜像可用 BOTSHEPHERD_IMAGE、MIMO_AGENT_UV_BASE_IMAGE 覆盖。
 EOF
 }
 
@@ -606,11 +616,52 @@ detect_pkg_manager() {
 
 pkg_install() {
   local mgr
+  local apt_source=""
+  local distro=""
+  local codename=""
+  local apt_base=""
+  local -a apt_options=()
   mgr="$(detect_pkg_manager)"
   case "$mgr" in
     apt-get)
-      as_root env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
-      as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
+      apt_base="$(apt_mirror_base)"
+      if [[ -n "$apt_base" && -r /etc/os-release ]]; then
+        distro="$(. /etc/os-release; printf '%s' "${ID:-}")"
+        codename="$(. /etc/os-release; printf '%s' "${VERSION_CODENAME:-}")"
+        if [[ "$codename" =~ ^[a-z0-9][a-z0-9.-]*$ \
+          && ( "$distro" == debian || "$distro" == ubuntu ) ]]; then
+          apt_source="$(mktemp)"
+          if [[ "$distro" == ubuntu ]]; then
+            printf 'deb %s/ubuntu/ %s main universe\n' \
+              "$apt_base" "$codename" >"$apt_source"
+            printf 'deb %s/ubuntu/ %s-updates main universe\n' \
+              "$apt_base" "$codename" >>"$apt_source"
+            printf 'deb %s/ubuntu/ %s-security main universe\n' \
+              "$apt_base" "$codename" >>"$apt_source"
+          else
+            printf 'deb %s/debian/ %s main\n' \
+              "$apt_base" "$codename" >"$apt_source"
+            printf 'deb %s/debian/ %s-updates main\n' \
+              "$apt_base" "$codename" >>"$apt_source"
+            printf 'deb %s/debian-security/ %s-security main\n' \
+              "$apt_base" "$codename" >>"$apt_source"
+          fi
+          apt_options=(
+            -o "Dir::Etc::sourcelist=$apt_source"
+            -o "Dir::Etc::sourceparts=-"
+            -o "APT::Get::List-Cleanup=0"
+          )
+          log "本次系统包安装使用阿里云 ${distro} 镜像"
+        fi
+      fi
+      as_root env DEBIAN_FRONTEND=noninteractive apt-get \
+        "${apt_options[@]}" update -qq >/dev/null 2>&1 || true
+      if ! as_root env DEBIAN_FRONTEND=noninteractive apt-get \
+        "${apt_options[@]}" install -y "$@"; then
+        [[ -z "$apt_source" ]] || rm -f "$apt_source"
+        return 1
+      fi
+      [[ -z "$apt_source" ]] || rm -f "$apt_source"
       ;;
     dnf) as_root dnf install -y "$@" ;;
     yum) as_root yum install -y "$@" ;;
@@ -672,7 +723,7 @@ resolve_cn_mode() {
   fi
   if [[ -t 0 ]] && (( ! ASSUME_YES )); then
     default_answer="$([[ "$detected" == 1 ]] && printf y || printf n)"
-    if prompt_yes_no "是否按中国大陆网络环境优化（Docker 安装源/镜像加速/国内 PyPI 源）" "$default_answer"; then
+    if prompt_yes_no "是否按中国大陆网络环境优化（Docker、Python/uv/PyPI、Debian、Playwright、GitHub）" "$default_answer"; then
       NAG_CN_MODE=1
     else
       NAG_CN_MODE=0
@@ -700,16 +751,105 @@ cnb_mirror_default() {
   fi
 }
 
-gscore_python_index() {
+python_index() {
+  if [[ -n "${NAG_PYTHON_INDEX:-}" ]]; then
+    printf '%s' "$NAG_PYTHON_INDEX"
+    return 0
+  fi
   if cn_enabled; then
-    printf 'https://pypi.tuna.tsinghua.edu.cn/simple/'
+    printf '%s' "$CN_PYTHON_INDEX_DEFAULT"
   else
     printf 'https://pypi.org/simple/'
   fi
 }
 
+gscore_python_index() {
+  python_index
+}
+
+uv_python_install_mirror() {
+  if [[ "${NAG_UV_PYTHON_INSTALL_MIRROR+x}" == x ]]; then
+    printf '%s' "$NAG_UV_PYTHON_INSTALL_MIRROR"
+  elif cn_enabled; then
+    printf '%s' "$CN_UV_PYTHON_INSTALL_MIRROR_DEFAULT"
+  fi
+}
+
+playwright_download_host() {
+  if [[ "${NAG_PLAYWRIGHT_DOWNLOAD_HOST+x}" == x ]]; then
+    printf '%s' "$NAG_PLAYWRIGHT_DOWNLOAD_HOST"
+  elif cn_enabled; then
+    printf '%s' "$CN_PLAYWRIGHT_DOWNLOAD_HOST_DEFAULT"
+  fi
+}
+
+debian_mirror() {
+  if [[ "${NAG_DEBIAN_MIRROR+x}" == x ]]; then
+    printf '%s' "$NAG_DEBIAN_MIRROR"
+  elif cn_enabled; then
+    printf '%s' "$CN_DEBIAN_MIRROR_DEFAULT"
+  fi
+}
+
+apt_mirror_base() {
+  if [[ "${NAG_APT_MIRROR_BASE+x}" == x ]]; then
+    printf '%s' "$NAG_APT_MIRROR_BASE"
+  elif cn_enabled; then
+    printf '%s' "$CN_APT_MIRROR_BASE_DEFAULT"
+  fi
+}
+
+github_proxy_prefix() {
+  if [[ "${NAG_GITHUB_PROXY_PREFIX+x}" == x ]]; then
+    printf '%s' "$NAG_GITHUB_PROXY_PREFIX"
+  elif cn_enabled; then
+    printf '%s' "$CN_GITHUB_PROXY_PREFIX_DEFAULT"
+  fi
+}
+
+github_download_url() {
+  local url="$1"
+  local prefix
+  if [[ "$url" != https://github.com/* && "$url" == *https://github.com/* ]]; then
+    url="https://github.com/${url#*https://github.com/}"
+  fi
+  prefix="$(github_proxy_prefix)"
+  if [[ -n "$prefix" && "$url" == https://github.com/* ]]; then
+    [[ "$prefix" == */ ]] || prefix="${prefix}/"
+    printf '%s%s' "$prefix" "$url"
+  else
+    printf '%s' "$url"
+  fi
+}
+
+uv_installer_github_base_url() {
+  local prefix
+  prefix="$(github_proxy_prefix)"
+  if [[ -n "$prefix" ]]; then
+    [[ "$prefix" == */ ]] || prefix="${prefix}/"
+    printf '%s%s' "$prefix" 'https://github.com'
+  fi
+}
+
+as_root_uv() {
+  local index
+  local mirror
+  local -a environment=("UV_DEFAULT_INDEX=${UV_DEFAULT_INDEX:-$(python_index)}")
+
+  index="${UV_INDEX:-}"
+  mirror="${UV_PYTHON_INSTALL_MIRROR:-$(uv_python_install_mirror)}"
+  [[ -z "$index" ]] || environment+=("UV_INDEX=$index")
+  [[ -z "$mirror" ]] || environment+=("UV_PYTHON_INSTALL_MIRROR=$mirror")
+  as_root env "${environment[@]}" "$@"
+}
+
 ensure_uv_runtime() {
   local installer
+  local installer_github_base
+  local -a installer_environment=(
+    "UV_INSTALL_DIR=/usr/local/bin"
+    "UV_NO_MODIFY_PATH=1"
+  )
 
   if command -v uv >/dev/null 2>&1; then
     return 0
@@ -722,7 +862,10 @@ ensure_uv_runtime() {
     rm -f "$installer"
     die "下载 uv 官方安装脚本失败；请先安装 uv 后重试"
   fi
-  if ! as_root env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 \
+  installer_github_base="$(uv_installer_github_base_url)"
+  [[ -z "$installer_github_base" ]] || \
+    installer_environment+=("UV_INSTALLER_GITHUB_BASE_URL=$installer_github_base")
+  if ! as_root env "${installer_environment[@]}" \
     sh "$installer"; then
     rm -f "$installer"
     die "uv 安装失败；请参考 https://docs.astral.sh/uv/ 手动安装"
@@ -857,9 +1000,16 @@ prepare_official_nonebot_instance() {
   ensure_host_cmd openssl openssl
   validate_port MIMO_CONSOLE_PORT "$web_port"
 
-  as_root env \
+  as_root_uv \
     MIMO_CONSOLE_COMMIT="$NAG_MIMO_CONSOLE_COMMIT" \
     MIMO_CONSOLE_REPOSITORY="$NAG_MIMO_CONSOLE_REPOSITORY" \
+    NONEBOT_PYTHON_INDEX="$(python_index)" \
+    PLAYWRIGHT_DOWNLOAD_HOST="$(playwright_download_host)" \
+    NAG_DEBIAN_MIRROR="$(debian_mirror)" \
+    MIMO_CONSOLE_ARCHIVE_URL="$(
+      github_download_url \
+        "https://github.com/${NAG_MIMO_CONSOLE_REPOSITORY}/archive/${NAG_MIMO_CONSOLE_COMMIT}.zip"
+    )" \
     bash "${SCRIPT_DIR}/scripts/prepare-nonebot-official-project.sh" \
     --kind "$kind" \
     --with-gs "$with_gs" \
@@ -875,9 +1025,10 @@ prepare_official_nonebot_instance() {
     --token-file "$token_file" \
     --image-repository "$image_repository"
 
-  as_root env \
+  as_root_uv \
     MIMO_CONSOLE_COMMIT="$NAG_MIMO_CONSOLE_COMMIT" \
-    MIMO_CONSOLE_GIT_URL="$NAG_MIMO_CONSOLE_GIT_URL" \
+    MIMO_CONSOLE_GIT_URL="$(github_download_url "$NAG_MIMO_CONSOLE_GIT_URL")" \
+    MIMO_AGENT_UV_BASE_IMAGE="${MIMO_AGENT_UV_BASE_IMAGE:-}" \
     bash "${SCRIPT_DIR}/scripts/register-mimo-agent-instance.sh" \
     --instance-id "$kind" \
     --project-dir "$project_dir" \
@@ -893,7 +1044,7 @@ official_nonebot_cli() {
   local action
   shift 2
   action="${1:-}"
-  as_root env \
+  as_root_uv \
     COMPOSE_PROJECT_NAME="$compose_project" \
     COMPOSE_FILE=docker-compose.yml:docker-compose.nag.yml \
     uvx --directory "$project_dir" \
@@ -1227,6 +1378,7 @@ preflight_environment() {
   ensure_docker_daemon
   ensure_compose_plugin
   if cn_enabled; then
+    log "大陆下载加速已启用：PyPI/uv Python、Debian/Ubuntu、Playwright、GitHub 与 Docker"
     configure_registry_mirror
   fi
   check_resources
@@ -2155,9 +2307,9 @@ install_qqofficial() {
     ROVERSIGN_REPO="https://cnb.cool/gscore-mirror/RoverSign"
     SCOREECHO_REPO="https://cnb.cool/gscore-mirror/ScoreEcho"
   else
-    XUTHERINGWAVESUID_REPO="https://github.com/Loping151/XutheringWavesUID.git"
-    ROVERSIGN_REPO="https://github.com/Loping151/RoverSign.git"
-    SCOREECHO_REPO="https://github.com/Loping151/ScoreEcho.git"
+    XUTHERINGWAVESUID_REPO="$(github_download_url "https://github.com/Loping151/XutheringWavesUID.git")"
+    ROVERSIGN_REPO="$(github_download_url "https://github.com/Loping151/RoverSign.git")"
+    SCOREECHO_REPO="$(github_download_url "https://github.com/Loping151/ScoreEcho.git")"
   fi
 
   gscore_ws_token="$(env_value GSCORE_WS_TOKEN "$env_file" || true)"
@@ -2212,7 +2364,7 @@ MIMO_OFFICIAL_PORT=${MIMO_OFFICIAL_PORT:-18082}
 GSCORE_IMAGE=docker.cnb.cool/gscore-mirror/gsuid_core:latest
 NONEBOT_IMAGE=nag-nonebot:local
 GSCORE_QQOFFICIAL_IMAGE=nag-gscore-qqofficial:0.7.0-2d582f6
-GSCORE_QQOFFICIAL_BUILD_CONTEXT=https://github.com/An-Sun110/gscore-qqofficial.git#$GSCORE_QQOFFICIAL_COMMIT
+GSCORE_QQOFFICIAL_BUILD_CONTEXT=$(github_download_url "https://github.com/An-Sun110/gscore-qqofficial.git")#$GSCORE_QQOFFICIAL_COMMIT
 QQ_APP_ID=$qq_app_id
 QQ_APP_SECRET=$qq_app_secret
 QQ_TOKEN=$qq_token
@@ -2229,6 +2381,8 @@ NONEBOT_PYTHON_INDEX=$(gscore_python_index)
 NONEBOT_COMMAND_START=$(v="$(env_value NONEBOT_COMMAND_START "$env_file")"; printf '%s' "${v:-/}")
 UV_NO_CONFIG=0
 PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+PLAYWRIGHT_DOWNLOAD_HOST=$(playwright_download_host)
+NAG_DEBIAN_MIRROR=$(debian_mirror)
 GSCORE_XWUID_PYTHON_PACKAGES=playwright opencv-python fonttools pypinyin
 EOF
   chmod 600 "$tmp_env"
@@ -3313,9 +3467,9 @@ EOF
     ROVERSIGN_REPO="https://cnb.cool/gscore-mirror/RoverSign"
     SCOREECHO_REPO="https://cnb.cool/gscore-mirror/ScoreEcho"
   else
-    XUTHERINGWAVESUID_REPO="https://github.com/Loping151/XutheringWavesUID.git"
-    ROVERSIGN_REPO="https://github.com/Loping151/RoverSign.git"
-    SCOREECHO_REPO="https://github.com/Loping151/ScoreEcho.git"
+    XUTHERINGWAVESUID_REPO="$(github_download_url "https://github.com/Loping151/XutheringWavesUID.git")"
+    ROVERSIGN_REPO="$(github_download_url "https://github.com/Loping151/RoverSign.git")"
+    SCOREECHO_REPO="$(github_download_url "https://github.com/Loping151/ScoreEcho.git")"
   fi
 
   gscore_ws_token="$(env_value GSCORE_WS_TOKEN "$existing_env_file" || true)"
@@ -3579,7 +3733,7 @@ ASTRBOT_IMAGE=soulter/astrbot:latest
 NONEBOT_IMAGE=nag-nonebot:local
 BOTSHEPHERD_IMAGE=$BOTSHEPHERD_IMAGE_DEFAULT
 GSCORE_QQOFFICIAL_IMAGE=nag-gscore-qqofficial:0.7.0-2d582f6
-GSCORE_QQOFFICIAL_BUILD_CONTEXT=https://github.com/An-Sun110/gscore-qqofficial.git#$GSCORE_QQOFFICIAL_COMMIT
+GSCORE_QQOFFICIAL_BUILD_CONTEXT=$(github_download_url "https://github.com/An-Sun110/gscore-qqofficial.git")#$GSCORE_QQOFFICIAL_COMMIT
 GSCORE_WS_TOKEN=$gscore_ws_token
 ENABLE_ASTRBOT=$enable_astrbot
 ENABLE_NONEBOT=$enable_nonebot
@@ -3592,9 +3746,9 @@ QQ_TOKEN=$qq_token
 QQ_ADMIN_IDS=$qq_admin_ids
 QQ_IS_SANDBOX=$qq_is_sandbox
 QQ_API_BASE=$qq_api_base
-NAPCAT_GSCORE_ADAPTER_ZIP_URL=$NAPCAT_ADAPTER_PINNED_URL
+NAPCAT_GSCORE_ADAPTER_ZIP_URL=$(github_download_url "$NAPCAT_ADAPTER_PINNED_URL")
 NAPCAT_GSCORE_ADAPTER_SHA256=$NAPCAT_ADAPTER_PINNED_SHA256
-ASTRBOT_GSCORE_ADAPTER_REPO=https://github.com/KimigaiiWuyi/astrbot_plugin_gscore_adapter.git
+ASTRBOT_GSCORE_ADAPTER_REPO=$(github_download_url "https://github.com/KimigaiiWuyi/astrbot_plugin_gscore_adapter.git")
 XUTHERINGWAVESUID_REPO=$XUTHERINGWAVESUID_REPO
 ROVERSIGN_REPO=$ROVERSIGN_REPO
 SCOREECHO_REPO=$SCOREECHO_REPO
@@ -3603,6 +3757,8 @@ NONEBOT_PYTHON_INDEX=$(gscore_python_index)
 NONEBOT_COMMAND_START=$(v="$(env_value NONEBOT_COMMAND_START "$existing_env_file")"; printf '%s' "${v:-/}")
 UV_NO_CONFIG=0
 PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+PLAYWRIGHT_DOWNLOAD_HOST=$(playwright_download_host)
+NAG_DEBIAN_MIRROR=$(debian_mirror)
 GSCORE_XWUID_PYTHON_PACKAGES=playwright opencv-python fonttools pypinyin
 EOF
   chmod 600 "$env_tmp"
@@ -4662,7 +4818,10 @@ nonebot_plugin_mode() {
   fi
 
   if [[ "$source_kind" == "github" ]]; then
-    github_url="https://github.com/${github_owner}/${github_repo}.git"
+    github_url="$(
+      github_download_url \
+        "https://github.com/${github_owner}/${github_repo}.git"
+    )"
     resolved_import="${plugin_import:-${github_repo//-/_}}"
     resolved_import="${resolved_import//./_}"
     log "GitHub 仓库：${github_url}"
@@ -4986,9 +5145,9 @@ if ((INSTALL_WUWA)) && prompt_yes_no "使用 CNB 镜像克隆鸣潮插件（适�
   SCOREECHO_REPO="https://cnb.cool/gscore-mirror/ScoreEcho"
 else
   USE_CNB_MIRRORS=0
-  XUTHERINGWAVESUID_REPO="https://github.com/Loping151/XutheringWavesUID.git"
-  ROVERSIGN_REPO="https://github.com/Loping151/RoverSign.git"
-  SCOREECHO_REPO="https://github.com/Loping151/ScoreEcho.git"
+  XUTHERINGWAVESUID_REPO="$(github_download_url "https://github.com/Loping151/XutheringWavesUID.git")"
+  ROVERSIGN_REPO="$(github_download_url "https://github.com/Loping151/RoverSign.git")"
+  SCOREECHO_REPO="$(github_download_url "https://github.com/Loping151/ScoreEcho.git")"
 fi
 
 NAPCAT_ADAPTER_URL="$(env_default NAPCAT_GSCORE_ADAPTER_ZIP_URL "$NAPCAT_ADAPTER_PINNED_URL")"
@@ -5149,9 +5308,9 @@ BOTSHEPHERD_IMAGE=$BOTSHEPHERD_IMAGE_DEFAULT
 NAPCAT_IMAGE=$NAPCAT_IMAGE
 ENABLE_NONEBOT_GSCORE_ADAPTER=$([[ "$ADAPTER_KIND" == "nonebot" ]] && printf true || printf false)
 BOTSHEPHERD_ENABLED=$USE_BOTSHEPHERD
-NAPCAT_GSCORE_ADAPTER_ZIP_URL=$NAPCAT_ADAPTER_URL
+NAPCAT_GSCORE_ADAPTER_ZIP_URL=$(github_download_url "$NAPCAT_ADAPTER_URL")
 NAPCAT_GSCORE_ADAPTER_SHA256=$NAPCAT_ADAPTER_SHA256
-ASTRBOT_GSCORE_ADAPTER_REPO=https://github.com/KimigaiiWuyi/astrbot_plugin_gscore_adapter.git
+ASTRBOT_GSCORE_ADAPTER_REPO=$(github_download_url "https://github.com/KimigaiiWuyi/astrbot_plugin_gscore_adapter.git")
 XUTHERINGWAVESUID_REPO=$XUTHERINGWAVESUID_REPO
 ROVERSIGN_REPO=$ROVERSIGN_REPO
 SCOREECHO_REPO=$SCOREECHO_REPO
@@ -5161,6 +5320,8 @@ NONEBOT_COMMAND_START=$(env_default NONEBOT_COMMAND_START "/")
 GSCORE_WS_TOKEN=$GSCORE_WS_TOKEN
 UV_NO_CONFIG=0
 PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+PLAYWRIGHT_DOWNLOAD_HOST=$(playwright_download_host)
+NAG_DEBIAN_MIRROR=$(debian_mirror)
 GSCORE_XWUID_PYTHON_PACKAGES=playwright opencv-python fonttools pypinyin
 EOF
 chmod 600 "$tmp_env"

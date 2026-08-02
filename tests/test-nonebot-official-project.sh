@@ -33,11 +33,15 @@ assert_project() {
   assert_contains 'nonebot-plugin-mimo-console = ["nonebot_plugin_mimo_console"]' \
     "${project}/pyproject.toml"
   assert_contains 'COPY . /app/' "${project}/Dockerfile"
+  assert_contains '3.12' "${project}/.python-version"
   assert_contains '# NAG managed exclusions' "${project}/.dockerignore"
   assert_contains '.env.*' "${project}/.dockerignore"
   assert_contains '.venv/' "${project}/.dockerignore"
   assert_contains 'playwright install --with-deps chromium' \
     "${project}/Dockerfile.nag"
+  assert_contains 'ARG PIP_INDEX_URL' "${project}/Dockerfile.nag"
+  assert_contains 'ARG PLAYWRIGHT_DOWNLOAD_HOST' "${project}/Dockerfile.nag"
+  assert_contains 'ARG NAG_DEBIAN_MIRROR' "${project}/Dockerfile.nag"
   assert_contains '--find-links=/wheel /wheel/*.whl' \
     "${project}/Dockerfile.nag"
   if grep -Fq "RUN python - <<'PY'" "${project}/Dockerfile.nag"; then

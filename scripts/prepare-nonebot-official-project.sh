@@ -5,6 +5,10 @@ NB_CLI_VERSION="${NB_CLI_VERSION:-1.7.4}"
 NB_DOCKER_PLUGIN_VERSION="${NB_DOCKER_PLUGIN_VERSION:-0.6.1}"
 MIMO_CONSOLE_COMMIT="${MIMO_CONSOLE_COMMIT:-acd83708b875245ba26617ed6cd7c622b59d1949}"
 MIMO_CONSOLE_REPOSITORY="${MIMO_CONSOLE_REPOSITORY:-gufei233/nonebot-plugin-mimo-console}"
+MIMO_CONSOLE_ARCHIVE_URL="${MIMO_CONSOLE_ARCHIVE_URL:-https://github.com/${MIMO_CONSOLE_REPOSITORY}/archive/${MIMO_CONSOLE_COMMIT}.zip}"
+NONEBOT_PYTHON_INDEX="${NONEBOT_PYTHON_INDEX:-https://pypi.org/simple/}"
+PLAYWRIGHT_DOWNLOAD_HOST="${PLAYWRIGHT_DOWNLOAD_HOST:-}"
+NAG_DEBIAN_MIRROR="${NAG_DEBIAN_MIRROR:-}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 usage() {
@@ -121,6 +125,10 @@ command -v "$PYTHON_BIN" >/dev/null 2>&1 || {
   printf '%s\n' "MIMO_CONSOLE_REPOSITORY must be owner/repository" >&2
   exit 64
 }
+[[ "$MIMO_CONSOLE_ARCHIVE_URL" == https://* ]] || {
+  printf '%s\n' "MIMO_CONSOLE_ARCHIVE_URL must use HTTPS" >&2
+  exit 64
+}
 [[ -f "$environment_file" ]] || {
   printf 'NoneBot environment file does not exist: %s\n' "$environment_file" >&2
   exit 66
@@ -176,10 +184,19 @@ run_nb() {
 
 if [[ ! -f "${project_dir}/pyproject.toml" ]]; then
   uv init --bare --name "nag-nonebot-${kind}" --python 3.12 "$project_dir"
+  if [[ ! -f "${project_dir}/.python-version" ]]; then
+    printf '%s\n' '3.12' >"${project_dir}/.python-version"
+  fi
   uv add --directory "$project_dir" \
     "nonebot2[fastapi,httpx,websockets]==2.5.0"
 fi
+if [[ ! -f "${project_dir}/.python-version" ]]; then
+  printf '%s\n' '3.12' >"${project_dir}/.python-version"
+fi
 printf '%s\n' "$kind" >"$kind_marker"
+if [[ ! -f "${project_dir}/uv.lock" ]]; then
+  uv lock --directory "$project_dir"
+fi
 uv sync --directory "$project_dir" --frozen
 
 # nb-cli discovers the project interpreter through .venv rather than
@@ -217,8 +234,7 @@ elif [[ "$with_gs" == "false" ]] \
 fi
 
 mimo_requirement="$(
-  printf 'nonebot-plugin-mimo-console @ https://github.com/%s/archive/%s.zip' \
-    "$MIMO_CONSOLE_REPOSITORY" "$MIMO_CONSOLE_COMMIT"
+  printf 'nonebot-plugin-mimo-console @ %s' "$MIMO_CONSOLE_ARCHIVE_URL"
 )"
 # Reconcile the pinned Docker-capable build on every NAG run. This also upgrades
 # projects created by an older NAG release instead of silently retaining it.
@@ -285,6 +301,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.nag
+      args:
+        PIP_INDEX_URL: ${NONEBOT_PYTHON_INDEX}
+        PLAYWRIGHT_DOWNLOAD_HOST: ${PLAYWRIGHT_DOWNLOAD_HOST}
+        NAG_DEBIAN_MIRROR: ${NAG_DEBIAN_MIRROR}
     container_name: ${container_name}
     restart: unless-stopped
     init: true
