@@ -48,6 +48,26 @@ warn() {
   printf '[NAG] 警告：%s\n' "$*" >&2
 }
 
+wait_progress() {
+  local label="$1"
+  local attempt="$2"
+  local max_attempts="$3"
+  local interval="$4"
+  local remaining=$(((max_attempts - attempt + 1) * interval))
+
+  if [[ -t 2 ]]; then
+    printf '\r[NAG] %s，剩余最多 %d 秒... ' "$label" "$remaining" >&2
+  elif ((attempt == 1 || attempt % 5 == 0)); then
+    printf '[NAG] %s，剩余最多 %d 秒...\n' "$label" "$remaining" >&2
+  fi
+}
+
+clear_wait_progress() {
+  if [[ -t 2 ]]; then
+    printf '\r\033[K' >&2
+  fi
+}
+
 die() {
   printf '[NAG] 错误：%s\n' "$*" >&2
   exit 1
@@ -67,8 +87,50 @@ trap 'on_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
 
 release_installer_lock() {
   [[ -d "$INSTALL_LOCK_DIR" && ! -L "$INSTALL_LOCK_DIR" ]] || return 0
-  rm -f -- "${INSTALL_LOCK_DIR}/pid"
+  rm -f -- "${INSTALL_LOCK_DIR}/pid" "${INSTALL_LOCK_DIR}/start_ticks"
   rmdir -- "$INSTALL_LOCK_DIR" 2>/dev/null || true
+}
+
+process_start_ticks() {
+  local pid="$1"
+
+  [[ "$pid" =~ ^[1-9][0-9]*$ && -r "/proc/${pid}/stat" ]] || return 1
+  awk '{print $22; exit}' "/proc/${pid}/stat" 2>/dev/null
+}
+
+write_installer_lock_identity() {
+  local start_ticks
+
+  start_ticks="$(process_start_ticks "$$")" \
+    || die "无法读取当前安装进程身份"
+  printf '%s\n' "$$" >"${INSTALL_LOCK_DIR}/pid"
+  printf '%s\n' "$start_ticks" >"${INSTALL_LOCK_DIR}/start_ticks"
+}
+
+installer_lock_owner_is_active() {
+  local owner_pid="$1"
+  local saved_start_ticks=""
+  local current_start_ticks=""
+  local command_line=""
+
+  [[ "$owner_pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  kill -0 "$owner_pid" 2>/dev/null || return 1
+  current_start_ticks="$(process_start_ticks "$owner_pid" || true)"
+  [[ -n "$current_start_ticks" ]] || return 1
+
+  if [[ -f "${INSTALL_LOCK_DIR}/start_ticks" \
+    && ! -L "${INSTALL_LOCK_DIR}/start_ticks" ]]; then
+    read -r saved_start_ticks <"${INSTALL_LOCK_DIR}/start_ticks" || true
+    [[ -n "$saved_start_ticks" \
+      && "$saved_start_ticks" == "$current_start_ticks" ]]
+    return
+  fi
+
+  # 兼容旧版只有 PID 的锁；同时避免 PID 被宿主机或其他命名空间复用时误判。
+  if [[ -r "/proc/${owner_pid}/cmdline" ]]; then
+    command_line="$(tr '\0' ' ' <"/proc/${owner_pid}/cmdline" 2>/dev/null || true)"
+  fi
+  [[ "$command_line" == *"install.sh"* ]]
 }
 
 acquire_installer_lock() {
@@ -76,7 +138,7 @@ acquire_installer_lock() {
 
   mkdir -p -- "$STATE_DIR"
   if mkdir -- "$INSTALL_LOCK_DIR" 2>/dev/null; then
-    printf '%s\n' "$$" >"${INSTALL_LOCK_DIR}/pid"
+    write_installer_lock_identity
     trap release_installer_lock EXIT
     return 0
   fi
@@ -86,14 +148,14 @@ acquire_installer_lock() {
   if [[ -f "${INSTALL_LOCK_DIR}/pid" && ! -L "${INSTALL_LOCK_DIR}/pid" ]]; then
     read -r owner_pid <"${INSTALL_LOCK_DIR}/pid" || true
   fi
-  if [[ "$owner_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$owner_pid" 2>/dev/null; then
+  if installer_lock_owner_is_active "$owner_pid"; then
     die "已有 NAG 安装或维护任务正在运行（PID ${owner_pid}）；请等待其完成后重试"
   fi
 
-  rm -f -- "${INSTALL_LOCK_DIR}/pid"
+  rm -f -- "${INSTALL_LOCK_DIR}/pid" "${INSTALL_LOCK_DIR}/start_ticks"
   if rmdir -- "$INSTALL_LOCK_DIR" 2>/dev/null \
     && mkdir -- "$INSTALL_LOCK_DIR" 2>/dev/null; then
-    printf '%s\n' "$$" >"${INSTALL_LOCK_DIR}/pid"
+    write_installer_lock_identity
     trap release_installer_lock EXIT
     return 0
   fi
@@ -308,6 +370,125 @@ env_value() {
   local file="$2"
   [[ -f "$file" ]] || return 0
   awk -F= -v key="$key" '$1 == key {sub(/^[^=]*=/, ""); sub(/\r$/, ""); print; exit}' "$file"
+}
+
+guided_state_valid() {
+  local state_file="$1"
+  local use_personal
+  local use_official
+  local personal_adapter
+  local official_adapter
+  local enable_astrbot
+  local enable_nonebot
+  local use_botshepherd
+
+  [[ -f "$state_file" && ! -L "$state_file" ]] || return 1
+  [[ "$(env_value NAG_GUIDED_STATE_VERSION "$state_file")" == "2" ]] || return 1
+  use_personal="$(env_value USE_PERSONAL "$state_file")"
+  use_official="$(env_value USE_OFFICIAL "$state_file")"
+  personal_adapter="$(env_value PERSONAL_ADAPTER "$state_file")"
+  official_adapter="$(env_value OFFICIAL_ADAPTER "$state_file")"
+  enable_astrbot="$(env_value ENABLE_ASTRBOT "$state_file")"
+  enable_nonebot="$(env_value ENABLE_NONEBOT "$state_file")"
+  use_botshepherd="$(env_value BOTSHEPHERD_ENABLED "$state_file")"
+  [[ "$use_personal" == "0" || "$use_personal" == "1" ]] || return 1
+  [[ "$use_official" == "0" || "$use_official" == "1" ]] || return 1
+  [[ "$personal_adapter" == "none" || "$personal_adapter" == "napcat" \
+    || "$personal_adapter" == "nonebot" || "$personal_adapter" == "astrbot" ]] \
+    || return 1
+  [[ "$official_adapter" == "none" || "$official_adapter" == "nonebot" \
+    || "$official_adapter" == "direct" ]] || return 1
+  [[ "$enable_astrbot" == "0" || "$enable_astrbot" == "1" ]] || return 1
+  [[ "$enable_nonebot" == "0" || "$enable_nonebot" == "1" ]] || return 1
+  [[ "$use_botshepherd" == "0" || "$use_botshepherd" == "1" ]] || return 1
+  guided_validate_topology \
+    "$use_personal" "$use_official" "$personal_adapter" "$official_adapter" \
+    "$enable_astrbot" "$enable_nonebot" "$use_botshepherd"
+}
+
+guided_env_valid() {
+  local env_file="$1"
+  local data_root
+
+  [[ -f "$env_file" && ! -L "$env_file" ]] || return 1
+  [[ "$(env_value NAG_GUIDED_STATE_VERSION "$env_file")" == "2" ]] || return 1
+  data_root="$(env_value DATA_ROOT "$env_file")"
+  [[ "$data_root" == /* ]] || return 1
+}
+
+container_started_at() {
+  "$DOCKER_BIN" inspect --format '{{.State.StartedAt}}' "$1" 2>/dev/null || true
+}
+
+container_belongs_to_compose_project() {
+  local container_name="$1"
+  local expected_project="$2"
+  local actual_project
+
+  actual_project="$(
+    "$DOCKER_BIN" inspect \
+      --format '{{index .Config.Labels "com.docker.compose.project"}}' \
+      "$container_name" 2>/dev/null || true
+  )"
+  [[ "$actual_project" == "$expected_project" ]]
+}
+
+remove_legacy_compose_container() {
+  local container_name="$1"
+  local expected_project="$2"
+  local expected_service="$3"
+  local actual_project=""
+  local actual_service=""
+
+  actual_project="$(
+    "$DOCKER_BIN" inspect \
+      --format '{{index .Config.Labels "com.docker.compose.project"}}' \
+      "$container_name" 2>/dev/null || true
+  )"
+  actual_service="$(
+    "$DOCKER_BIN" inspect \
+      --format '{{index .Config.Labels "com.docker.compose.service"}}' \
+      "$container_name" 2>/dev/null || true
+  )"
+  [[ "$actual_project" == "$expected_project" \
+    && "$actual_service" == "$expected_service" ]] || return 1
+  "$DOCKER_BIN" rm --force "$container_name" >/dev/null \
+    || die "无法移除旧版 Compose 容器：${container_name}"
+}
+
+nag_managed_container_exists() {
+  local container_name
+  local compose_project
+
+  for container_name in \
+    nag-gscore nag-napcat nag-astrbot nag-botshepherd \
+    nag-nonebot nag-nonebot-qqofficial nag-gscore-qqofficial; do
+    compose_project="$(
+      "$DOCKER_BIN" inspect \
+        --format '{{index .Config.Labels "com.docker.compose.project"}}' \
+        "$container_name" 2>/dev/null || true
+    )"
+    case "$compose_project" in
+      nag|nag-nonebot-personal|nag-nonebot-official|nag-qqofficial)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+nag_named_container_exists() {
+  local container_name
+
+  for container_name in \
+    nag-gscore nag-napcat nag-astrbot nag-botshepherd \
+    nag-nonebot nag-nonebot-qqofficial nag-gscore-qqofficial; do
+    if [[ -n "$("$DOCKER_BIN" inspect --format '{{.Name}}' \
+      "$container_name" 2>/dev/null || true)" ]]; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 env_default() {
@@ -762,10 +943,13 @@ restart_official_nonebot_instance() {
         "$container_name" 2>/dev/null || true
     )"
     if [[ "$state" == "true|healthy" || "$state" == "true|none" ]]; then
+      clear_wait_progress
       return 0
     fi
+    wait_progress "等待 ${container_name} 恢复健康" "$attempt" 90 2
     sleep 2
   done
+  clear_wait_progress
 
   as_root "$DOCKER_BIN" logs --tail 120 "$container_name" 2>/dev/null || true
   die "官方 NoneBot Compose 服务重启后未恢复健康：${compose_project}"
@@ -795,7 +979,10 @@ payload = json.load(
 print("true" if payload.get("configured") else "false", end="")
 ' 2>/dev/null || true
     )"
-    [[ "$configured" != "true" ]] || return 1
+    if [[ "$configured" == "true" ]]; then
+      clear_wait_progress
+      return 1
+    fi
 
     token="$(
       "$DOCKER_BIN" logs "${log_args[@]}" "$container_name" 2>&1 \
@@ -804,11 +991,15 @@ print("true" if payload.get("configured") else "false", end="")
         | tail -n 1
     )"
     if [[ -n "$token" ]]; then
+      clear_wait_progress
       printf '%s' "$token"
       return 0
     fi
+    wait_progress "等待 ${container_name} 的 Mimo Console 初始化令牌" \
+      "$attempt" 20 1
     sleep 1
   done
+  clear_wait_progress
   return 1
 }
 
@@ -2145,8 +2336,10 @@ EOF
       venv_ready=1
       break
     fi
+    wait_progress "等待 GsCore 完成初始化" "$attempt" 60 2
     sleep 2
   done
+  clear_wait_progress
   if (( ! venv_ready )); then
     official_compose logs --tail=100 gscore || true
     die "GsCore 120 秒内未完成初始化"
@@ -2177,8 +2370,10 @@ PY
       >/dev/null 2>&1; then
       break
     fi
+    wait_progress "等待基础 GsCore WebUI 就绪" "$attempt" 90 2
     sleep 2
   done
+  clear_wait_progress
   if ((attempt > 90)); then
     official_compose logs --tail=120 gscore || true
     die "基础配置后 GsCore WebUI 未就绪"
@@ -2201,8 +2396,10 @@ PY
         nonebot_ready=1
         break
       fi
+      wait_progress "等待 AstrBot 创建 cmd_config.json" "$attempt" 60 2
       sleep 2
     done
+    clear_wait_progress
     if (( ! nonebot_ready )); then
       "$DOCKER_BIN" logs --tail=120 nag-qqofficial-nonebot || true
       die "NoneBot QQ 官方适配器 120 秒内未达到健康状态"
@@ -2520,6 +2717,8 @@ install_guided() {
   local state_file="${STATE_DIR}/guided.state"
   local identity_file="${STATE_DIR}/napcat-identity.env"
   local topology_file="$env_file"
+  local existing_env_file="$env_file"
+  local existing_identity_file="$identity_file"
   local existing_state=0
   local repair_mode=0
   local full_reconfigure=0
@@ -2545,26 +2744,65 @@ install_guided() {
   local old_qq_admin_ids=""
   local old_qq_is_sandbox="false"
   local old_napcat_image=""
+  local deployment_state="new"
 
-  [[ -f "$state_file" ]] && topology_file="$state_file"
-  if [[ -f "$env_file" || -f "$state_file" ]]; then
+  if guided_state_valid "$state_file" && guided_env_valid "$env_file"; then
+    deployment_state="complete"
+    topology_file="$state_file"
     existing_state=1
-    old_data_root="$(env_value DATA_ROOT "$env_file" || true)"
-    old_bind_ip="$(env_value BIND_IP "$env_file" || true)"
-    old_gscore_port="$(env_value GSCORE_PORT "$env_file" || true)"
-    old_napcat_port="$(env_value NAPCAT_WEBUI_PORT "$env_file" || true)"
-    old_astrbot_port="$(env_value ASTRBOT_WEBUI_PORT "$env_file" || true)"
-    old_botshepherd_port="$(env_value BOTSHEPHERD_WEBUI_PORT "$env_file" || true)"
-    old_personal_masters="$(env_value NAPCAT_MASTER_QQ "$env_file" || true)"
-    old_napcat_account="$(env_value NAPCAT_ACCOUNT "$identity_file" || true)"
-    old_napcat_mac="$(env_value NAPCAT_MAC "$identity_file" || true)"
-    old_qq_app_id="$(env_value QQ_APP_ID "$env_file" || true)"
-    old_qq_app_secret="$(env_value QQ_APP_SECRET "$env_file" || true)"
-    old_qq_token="$(env_value QQ_TOKEN "$env_file" || true)"
-    old_qq_admin_ids="$(env_value QQ_ADMIN_IDS "$env_file" || true)"
-    old_qq_is_sandbox="$(env_value QQ_IS_SANDBOX "$env_file" || true)"
+  elif [[ -f "$env_file" || -f "$state_file" ]]; then
+    deployment_state="degraded"
+    existing_state=1
+    [[ -f "$state_file" ]] && topology_file="$state_file"
+    warn "检测到现有部署状态，但状态文件不完整或版本不匹配；将按可修复部署处理"
+  elif guided_state_valid "${state_file}.tmp" \
+    && guided_env_valid "${env_file}.tmp"; then
+    deployment_state="interrupted"
+    existing_state=1
+    topology_file="${state_file}.tmp"
+    existing_env_file="${env_file}.tmp"
+    [[ ! -f "${identity_file}.tmp" ]] \
+      || existing_identity_file="${identity_file}.tmp"
+    warn "检测到上次中断后留下的完整临时状态；将按可恢复部署继续"
+  elif [[ -f "${env_file}.tmp" || -f "${state_file}.tmp" ]]; then
+    die "检测到上次未完成且内容不完整的部署状态（${STATE_DIR}/*.tmp）；为避免覆盖，请先检查或移走这些临时文件"
+  elif command -v "$DOCKER_BIN" >/dev/null 2>&1 \
+    && nag_managed_container_exists; then
+    deployment_state="orphaned"
+    die "检测到 NAG 管理的容器，但正式安装状态缺失；为避免误认领，请先恢复 ${env_file} 和 ${state_file}，或卸载残留容器后重试"
+  elif command -v "$DOCKER_BIN" >/dev/null 2>&1 \
+    && nag_named_container_exists; then
+    deployment_state="conflict"
+    die "检测到与 NAG 同名但不属于已知 NAG Compose 项目的容器；为避免覆盖外部部署，请先处理容器命名冲突"
+  fi
+
+  if ((existing_state)); then
+    old_data_root="$(env_value DATA_ROOT "$existing_env_file" || true)"
+    old_bind_ip="$(env_value BIND_IP "$existing_env_file" || true)"
+    old_gscore_port="$(env_value GSCORE_PORT "$existing_env_file" || true)"
+    old_napcat_port="$(env_value NAPCAT_WEBUI_PORT "$existing_env_file" || true)"
+    old_astrbot_port="$(env_value ASTRBOT_WEBUI_PORT "$existing_env_file" || true)"
+    old_botshepherd_port="$(env_value BOTSHEPHERD_WEBUI_PORT "$existing_env_file" || true)"
+    old_personal_masters="$(env_value NAPCAT_MASTER_QQ "$existing_env_file" || true)"
+    old_napcat_account="$(env_value NAPCAT_ACCOUNT "$existing_identity_file" || true)"
+    old_napcat_mac="$(env_value NAPCAT_MAC "$existing_identity_file" || true)"
+    old_qq_app_id="$(env_value QQ_APP_ID "$existing_env_file" || true)"
+    old_qq_app_secret="$(env_value QQ_APP_SECRET "$existing_env_file" || true)"
+    old_qq_token="$(env_value QQ_TOKEN "$existing_env_file" || true)"
+    old_qq_admin_ids="$(env_value QQ_ADMIN_IDS "$existing_env_file" || true)"
+    old_qq_is_sandbox="$(env_value QQ_IS_SANDBOX "$existing_env_file" || true)"
     old_qq_is_sandbox="${old_qq_is_sandbox:-false}"
-    old_napcat_image="$(env_value NAPCAT_IMAGE "$env_file" || true)"
+    old_napcat_image="$(env_value NAPCAT_IMAGE "$existing_env_file" || true)"
+
+    if [[ "$deployment_state" == "complete" && -n "$old_data_root" ]]; then
+      local data_root_marker="${old_data_root}/${DATA_ROOT_MARKER_NAME}"
+      if [[ ! -f "$data_root_marker" || -L "$data_root_marker" \
+        || "$(head -n 1 -- "$data_root_marker" 2>/dev/null || true)" \
+          != "$DATA_ROOT_MARKER_VALUE" ]]; then
+        deployment_state="degraded"
+        warn "状态文件有效，但数据目录缺少有效的 NAG 管理标记；将按可修复部署处理"
+      fi
+    fi
 
     old_use_personal="$(env_value USE_PERSONAL "$topology_file" || true)"
     if [[ "$old_use_personal" != "0" && "$old_use_personal" != "1" ]]; then
@@ -2590,7 +2828,7 @@ install_guided() {
       && "$old_personal_adapter" != "napcat" \
       && "$old_personal_adapter" != "nonebot" \
       && "$old_personal_adapter" != "astrbot" ]]; then
-      if [[ "$(env_value ENABLE_NONEBOT_GSCORE_ADAPTER "$env_file" || true)" == "true" ]]; then
+      if [[ "$(env_value ENABLE_NONEBOT_GSCORE_ADAPTER "$existing_env_file" || true)" == "true" ]]; then
         old_personal_adapter="nonebot"
       elif [[ "$old_enable_astrbot" == "1" \
         && "$old_napcat_image" != "$NAPCAT_COMPAT_IMAGE" ]]; then
@@ -2622,6 +2860,43 @@ install_guided() {
     elif [[ "$old_use_official" != "1" ]]; then
       old_official_adapter="none"
     fi
+
+    if [[ "$deployment_state" == "complete" ]] \
+      && command -v "$DOCKER_BIN" >/dev/null 2>&1; then
+      local runtime_ownership_valid=1
+      container_belongs_to_compose_project nag-gscore nag \
+        || runtime_ownership_valid=0
+      if [[ "$old_use_personal" == "1" ]]; then
+        container_belongs_to_compose_project nag-napcat nag \
+          || runtime_ownership_valid=0
+      fi
+      if [[ "$old_enable_astrbot" == "1" ]]; then
+        container_belongs_to_compose_project nag-astrbot nag \
+          || runtime_ownership_valid=0
+      fi
+      if [[ "$old_enable_nonebot" == "1" ]]; then
+        container_belongs_to_compose_project \
+          nag-nonebot nag-nonebot-personal || runtime_ownership_valid=0
+      fi
+      if [[ "$old_use_botshepherd" == "1" ]]; then
+        container_belongs_to_compose_project nag-botshepherd nag \
+          || runtime_ownership_valid=0
+      fi
+      if [[ "$old_use_official" == "1" \
+        && "$old_official_adapter" == "nonebot" ]]; then
+        container_belongs_to_compose_project \
+          nag-nonebot-qqofficial nag-nonebot-official \
+          || runtime_ownership_valid=0
+      elif [[ "$old_use_official" == "1" \
+        && "$old_official_adapter" == "direct" ]]; then
+        container_belongs_to_compose_project nag-gscore-qqofficial nag \
+          || runtime_ownership_valid=0
+      fi
+      if ((! runtime_ownership_valid)); then
+        deployment_state="degraded"
+        warn "状态文件有效，但部分容器缺失或不属于预期的 NAG Compose 项目；将按可修复部署处理"
+      fi
+    fi
   fi
 
   local use_personal=0
@@ -2638,7 +2913,11 @@ install_guided() {
   local topology_action=""
 
   if ((existing_state)); then
-    printf '\n检测到现有部署状态。\n'
+    if [[ "$deployment_state" == "complete" ]]; then
+      printf '\n检测到完整的现有部署状态。\n'
+    else
+      printf '\n检测到可修复的现有部署状态。\n'
+    fi
     guided_render_topology \
       "$old_use_personal" "$old_use_official" \
       "$old_personal_adapter" "$old_official_adapter" \
@@ -2848,29 +3127,29 @@ EOF
   local gscore_ws_token
   local napcat_image="mlikiowa/napcat-docker:latest"
 
-  napcat_port="$(env_value NAPCAT_WEBUI_PORT "$env_file" || true)"
+  napcat_port="$(env_value NAPCAT_WEBUI_PORT "$existing_env_file" || true)"
   napcat_port="${napcat_port:-6099}"
-  astrbot_port="$(env_value ASTRBOT_WEBUI_PORT "$env_file" || true)"
+  astrbot_port="$(env_value ASTRBOT_WEBUI_PORT "$existing_env_file" || true)"
   astrbot_port="${astrbot_port:-6185}"
-  botshepherd_port="$(env_value BOTSHEPHERD_WEBUI_PORT "$env_file" || true)"
+  botshepherd_port="$(env_value BOTSHEPHERD_WEBUI_PORT "$existing_env_file" || true)"
   botshepherd_port="${botshepherd_port:-5111}"
-  personal_masters="$(env_value NAPCAT_MASTER_QQ "$env_file" || true)"
-  napcat_account="$(env_value NAPCAT_ACCOUNT "$identity_file" || true)"
-  napcat_mac="$(env_value NAPCAT_MAC "$identity_file" || true)"
-  qq_app_id="$(env_value QQ_APP_ID "$env_file" || true)"
-  qq_app_secret="$(env_value QQ_APP_SECRET "$env_file" || true)"
-  qq_token="$(env_value QQ_TOKEN "$env_file" || true)"
-  qq_admin_ids="$(env_value QQ_ADMIN_IDS "$env_file" || true)"
-  qq_is_sandbox="$(env_value QQ_IS_SANDBOX "$env_file" || true)"
+  personal_masters="$(env_value NAPCAT_MASTER_QQ "$existing_env_file" || true)"
+  napcat_account="$(env_value NAPCAT_ACCOUNT "$existing_identity_file" || true)"
+  napcat_mac="$(env_value NAPCAT_MAC "$existing_identity_file" || true)"
+  qq_app_id="$(env_value QQ_APP_ID "$existing_env_file" || true)"
+  qq_app_secret="$(env_value QQ_APP_SECRET "$existing_env_file" || true)"
+  qq_token="$(env_value QQ_TOKEN "$existing_env_file" || true)"
+  qq_admin_ids="$(env_value QQ_ADMIN_IDS "$existing_env_file" || true)"
+  qq_is_sandbox="$(env_value QQ_IS_SANDBOX "$existing_env_file" || true)"
   qq_is_sandbox="${qq_is_sandbox:-false}"
-  qq_api_base="$(env_value QQ_API_BASE "$env_file" || true)"
+  qq_api_base="$(env_value QQ_API_BASE "$existing_env_file" || true)"
   qq_api_base="${qq_api_base:-https://api.sgroup.qq.com}"
 
-  data_root="$(env_value DATA_ROOT "$env_file" || true)"
+  data_root="$(env_value DATA_ROOT "$existing_env_file" || true)"
   data_root="${data_root:-/opt/nag-data}"
-  bind_ip="$(env_value BIND_IP "$env_file" || true)"
+  bind_ip="$(env_value BIND_IP "$existing_env_file" || true)"
   bind_ip="${bind_ip:-127.0.0.1}"
-  gscore_port="$(env_value GSCORE_PORT "$env_file" || true)"
+  gscore_port="$(env_value GSCORE_PORT "$existing_env_file" || true)"
   gscore_port="${gscore_port:-8765}"
   local edit_shared_settings=1
   if ((existing_state)); then
@@ -3039,7 +3318,7 @@ EOF
     SCOREECHO_REPO="https://github.com/Loping151/ScoreEcho.git"
   fi
 
-  gscore_ws_token="$(env_value GSCORE_WS_TOKEN "$env_file" || true)"
+  gscore_ws_token="$(env_value GSCORE_WS_TOKEN "$existing_env_file" || true)"
   if [[ -z "$gscore_ws_token" ]]; then
     gscore_ws_token="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
   fi
@@ -3321,7 +3600,7 @@ ROVERSIGN_REPO=$ROVERSIGN_REPO
 SCOREECHO_REPO=$SCOREECHO_REPO
 GSCORE_PYTHON_INDEX=$(gscore_python_index)
 NONEBOT_PYTHON_INDEX=$(gscore_python_index)
-NONEBOT_COMMAND_START=$(v="$(env_value NONEBOT_COMMAND_START "$env_file")"; printf '%s' "${v:-/}")
+NONEBOT_COMMAND_START=$(v="$(env_value NONEBOT_COMMAND_START "$existing_env_file")"; printf '%s' "${v:-/}")
 UV_NO_CONFIG=0
 PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 GSCORE_XWUID_PYTHON_PACKAGES=playwright opencv-python fonttools pypinyin
@@ -3441,13 +3720,18 @@ EOF
   local stop_services=()
   ((use_personal)) || stop_services+=(napcat)
   ((enable_astrbot)) || stop_services+=(astrbot)
-  ((enable_nonebot)) || stop_services+=(nonebot)
-  ((enable_official_nonebot)) || stop_services+=(nonebot-qqofficial)
   ((enable_official_direct)) || stop_services+=(gscore-qqofficial)
   ((use_botshepherd)) || stop_services+=(botshepherd)
   if ((${#stop_services[@]})); then
     log "停止不属于所选拓扑的组件"
     guided_compose stop "${stop_services[@]}" >/dev/null 2>&1 || true
+  fi
+  if remove_legacy_compose_container nag-nonebot nag nonebot; then
+    log "移除旧版 NAG 自定义 NoneBot 服务"
+  fi
+  if remove_legacy_compose_container \
+    nag-nonebot-qqofficial nag nonebot-qqofficial; then
+    log "移除旧版 NAG 自定义 QQ 官方 NoneBot 服务"
   fi
 
   if ((force_reconcile)) || ! guided_service_exists gscore; then
@@ -3481,6 +3765,15 @@ EOF
 
   local apply_started_at
   apply_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local napcat_started_before=""
+  local astrbot_started_before=""
+  local botshepherd_started_before=""
+  local napcat_started_after=""
+  local astrbot_started_after=""
+  local botshepherd_started_after=""
+  napcat_started_before="$(container_started_at nag-napcat)"
+  astrbot_started_before="$(container_started_at nag-astrbot)"
+  botshepherd_started_before="$(container_started_at nag-botshepherd)"
   local gscore_restarted=0
   log "确保共享 GsCore 正在运行"
   guided_compose up -d gscore
@@ -3493,8 +3786,10 @@ EOF
       venv_ready=1
       break
     fi
+    wait_progress "等待 GsCore 完成初始化" "$attempt" 60 2
     sleep 2
   done
+  clear_wait_progress
   ((venv_ready)) || die "GsCore 120 秒内未完成初始化"
 
   local combined_masters=""
@@ -3542,8 +3837,10 @@ PY
       >/dev/null 2>&1; then
       break
     fi
+    wait_progress "等待基础 GsCore WebUI 就绪" "$attempt" 90 2
     sleep 2
   done
+  clear_wait_progress
   ((attempt <= 90)) || die "GsCore WebUI 未就绪"
 
   local personal_adapter_reconfigure=0
@@ -3585,8 +3882,10 @@ PY
         'test -s /AstrBot/data/cmd_config.json' >/dev/null 2>&1; then
         break
       fi
+      wait_progress "等待 AstrBot 创建 cmd_config.json" "$attempt" 60 2
       sleep 2
     done
+    clear_wait_progress
     ((attempt <= 60)) || die "AstrBot 未创建 cmd_config.json"
     guided_compose stop astrbot
     guided_compose --profile init run --rm astrbot-onebot-init
@@ -3601,10 +3900,6 @@ PY
   ((use_botshepherd)) && start_services+=(botshepherd)
   guided_compose up -d "${start_services[@]}"
   if ((enable_nonebot)); then
-    if guided_service_exists nonebot; then
-      log "移除旧版 NAG 自定义 NoneBot 服务"
-      guided_compose rm --stop --force nonebot >/dev/null
-    fi
     log "通过 nb docker build/up 启动个人 QQ NoneBot"
     official_nonebot_cli "$personal_project" nag-nonebot-personal build
     official_nonebot_cli "$personal_project" nag-nonebot-personal up -d
@@ -3617,10 +3912,6 @@ PY
   local personal_check_since="$apply_started_at"
   local official_check_since="$apply_started_at"
   if ((enable_official_nonebot)); then
-    if guided_service_exists nonebot-qqofficial; then
-      log "移除旧版 NAG 自定义 QQ 官方 NoneBot 服务"
-      guided_compose rm --stop --force nonebot-qqofficial >/dev/null
-    fi
     log "通过 nb docker build/up 启动 QQ 官方 NoneBot"
     official_nonebot_cli "$official_project" nag-nonebot-official build
     official_nonebot_cli "$official_project" nag-nonebot-official up -d
@@ -3646,6 +3937,9 @@ PY
       guided_compose restart napcat
     fi
   fi
+  napcat_started_after="$(container_started_at nag-napcat)"
+  astrbot_started_after="$(container_started_at nag-astrbot)"
+  botshepherd_started_after="$(container_started_at nag-botshepherd)"
 
   if ((INSTALL_WUWA || INSTALL_WUWA_DEPS)); then
     log "所选基础服务启动完成，先停止 GsCore 以初始化插件"
@@ -3669,8 +3963,10 @@ PY
         >/dev/null 2>&1; then
         break
       fi
+      wait_progress "等待插件初始化后的 GsCore WebUI" "$attempt" 90 2
       sleep 2
     done
+    clear_wait_progress
     if ((attempt > 90)); then
       guided_compose logs --tail=120 gscore || true
       die "插件初始化后 GsCore WebUI 未就绪"
@@ -3702,7 +3998,9 @@ PY
   local napcat_webui_token=""
   local astrbot_initial_password=""
   local botshepherd_initial_password=""
-  if ((use_personal)); then
+  if ((use_personal)) \
+    && [[ -z "$napcat_started_before" \
+      || "$napcat_started_before" != "$napcat_started_after" ]]; then
     log "等待 NapCat WebUI Token"
     for ((attempt = 1; attempt <= 60; attempt++)); do
       napcat_webui_token="$(
@@ -3711,16 +4009,20 @@ PY
           | tail -n 1 || true
       )"
       [[ -z "$napcat_webui_token" ]] || break
+      wait_progress "等待 NapCat WebUI Token" "$attempt" 60 2
       sleep 2
     done
+    clear_wait_progress
     [[ -n "$napcat_webui_token" ]] || \
       warn "NapCat 已启动，但 120 秒内没有从日志读取到 WebUI Token"
+  elif ((use_personal)); then
+    log "NapCat 为未重建的现有实例；跳过一次性 WebUI Token 日志提取"
   fi
-  if ((enable_astrbot)); then
+  if ((enable_astrbot)) \
+    && [[ -z "$astrbot_started_before" \
+      || "$astrbot_started_before" != "$astrbot_started_after" ]]; then
     log "等待 AstrBot 初始 WebUI 密码"
-    local astrbot_password_attempts=1
-    ((astrbot_added || ! existing_state || repair_mode)) \
-      && astrbot_password_attempts=60
+    local astrbot_password_attempts=60
     for ((attempt = 1; attempt <= astrbot_password_attempts; attempt++)); do
       astrbot_initial_password="$(
         guided_compose logs --no-color astrbot 2>/dev/null \
@@ -3729,12 +4031,20 @@ PY
           | tail -n 1 || true
       )"
       [[ -z "$astrbot_initial_password" ]] || break
+      wait_progress "等待 AstrBot 初始 WebUI 密码" \
+        "$attempt" "$astrbot_password_attempts" 2
       sleep 2
     done
+    clear_wait_progress
     [[ -n "$astrbot_initial_password" ]] || \
       warn "未从当前容器日志读取到 AstrBot 初始密码；复用已有数据时配置文件只保存密码哈希，无法恢复明文，请使用此前设置的密码或在 WebUI 外重置"
+  elif ((enable_astrbot)); then
+    log "AstrBot 为未重建的现有实例；跳过一次性初始密码日志提取"
   fi
-  if ((use_botshepherd)); then
+  if ((use_botshepherd)) \
+    && [[ -z "$botshepherd_started_before" \
+      || "$botshepherd_started_before" != "$botshepherd_started_after" ]]; then
+    log "等待 BotShepherd 初始 WebUI 密码"
     for ((attempt = 1; attempt <= 30; attempt++)); do
       botshepherd_initial_password="$(
         guided_compose logs --no-color botshepherd 2>/dev/null \
@@ -3742,10 +4052,14 @@ PY
           | tail -n 1 || true
       )"
       [[ -z "$botshepherd_initial_password" ]] || break
+      wait_progress "等待 BotShepherd 初始 WebUI 密码" "$attempt" 30 2
       sleep 2
     done
+    clear_wait_progress
     [[ -n "$botshepherd_initial_password" ]] || \
       warn "未从日志读取到 BotShepherd 初始密码；复用已有数据时请使用此前设置的密码"
+  elif ((use_botshepherd)); then
+    log "BotShepherd 为未重建的现有实例；跳过一次性初始密码日志提取"
   fi
 
   if ((enable_official_direct && (official_reconfigure || gscore_restarted))); then
@@ -3761,10 +4075,14 @@ PY
         break
       fi
       if [[ "$direct_logs" == *"11298"* ]]; then
+        clear_wait_progress
         die "QQ 拒绝了服务器 IP（11298）；请将其加入机器人 IP 白名单"
       fi
+      wait_progress "等待 QQ 官方直连完成 Gateway 与 GsCore 连接" \
+        "$attempt" 60 2
       sleep 2
     done
+    clear_wait_progress
     ((attempt <= 60)) || die "gscore-qqofficial 未完成两条连接"
   elif ((enable_official_direct)); then
     guided_service_running gscore-qqofficial \
@@ -3781,8 +4099,10 @@ PY
       if [[ "$personal_nb_logs" == *"[SUCCESS] GenshinUID"*"Bot_ID: NoneBot2"* ]]; then
         break
       fi
+      wait_progress "等待个人 QQ NoneBot 连接 GsCore" "$attempt" 60 2
       sleep 2
     done
+    clear_wait_progress
     ((attempt <= 60)) || die "个人 QQ NoneBot 的 GenshinUID 未连接 GsCore"
   fi
   if ((enable_official_nonebot && (official_reconfigure || gscore_restarted))); then
@@ -3797,10 +4117,13 @@ PY
         break
       fi
       if [[ "$official_nb_logs" == *"code=11298"* ]]; then
+        clear_wait_progress
         die "QQ 拒绝了服务器 IP（11298）；请将其加入机器人 IP 白名单"
       fi
+      wait_progress "等待 QQ 官方 NoneBot 完成两条连接" "$attempt" 60 2
       sleep 2
     done
+    clear_wait_progress
     ((attempt <= 60)) || die "QQ 官方 NoneBot 未完成两条连接"
   elif ((enable_official_nonebot)); then
     [[ "$("$DOCKER_BIN" inspect --format '{{.State.Running}}' \

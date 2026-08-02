@@ -1,69 +1,38 @@
 name: nag
 
+x-common-env: &common-env
+  TZ: ${TZ:-Asia/Shanghai}
+
 services:
   gscore:
-    extends:
-      file: docker-compose.nonebot.yml
-      service: gscore
+    image: ${GSCORE_IMAGE:-docker.cnb.cool/gscore-mirror/gsuid_core:latest}
     container_name: nag-gscore
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      PYTHONUNBUFFERED: "1"
+      UV_INDEX: ${GSCORE_PYTHON_INDEX:-https://pypi.org/simple/}
+      UV_NO_CONFIG: ${UV_NO_CONFIG:-0}
+      PLAYWRIGHT_BROWSERS_PATH: ${PLAYWRIGHT_BROWSERS_PATH:-/ms-playwright}
+      http_proxy: ${GSCORE_HTTP_PROXY:-}
+      https_proxy: ${GSCORE_HTTPS_PROXY:-}
+      no_proxy: ${GSCORE_NO_PROXY:-localhost,127.0.0.1,gscore,nonebot,botshepherd,napcat,.local,cnb.cool,mirrors.aliyun.com,pypi.tuna.tsinghua.edu.cn,mirrors.volces.com}
+    ports:
+      - "${BIND_IP:-127.0.0.1}:${GSCORE_PORT:-8765}:8765"
+    volumes:
+      - ${DATA_ROOT:-/opt/nag-data}/gscore/data:/gsuid_core/data
+      - ${DATA_ROOT:-/opt/nag-data}/gscore/plugins:/gsuid_core/gsuid_core/plugins
+      - gscore-venv:/venv
+      - gscore-playwright:/ms-playwright
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - nag-net
 
   astrbot:
     extends:
       file: docker-compose.yml
       service: astrbot
-
-  nonebot:
-    extends:
-      file: docker-compose.nonebot.yml
-      service: nonebot
-    environment:
-      NONEBOT_PLATFORM: onebot
-      ENABLE_NONEBOT_GSCORE_ADAPTER: ${ENABLE_NONEBOT_GSCORE_ADAPTER:-false}
-
-  nonebot-qqofficial:
-    image: ${NONEBOT_IMAGE:-nag-nonebot:local}
-    build:
-      context: ./nonebot
-    container_name: nag-nonebot-qqofficial
-    restart: unless-stopped
-    environment:
-      TZ: ${TZ:-Asia/Shanghai}
-      HOST: 0.0.0.0
-      PORT: "8080"
-      DRIVER: "~fastapi+~httpx+~websockets"
-      NONEBOT_PLATFORM: qqofficial
-      NAPCAT_MASTER_QQ: ${QQ_ADMIN_IDS:-}
-      ENABLE_NONEBOT_GSCORE_ADAPTER: "true"
-      GSUID_CORE_HOST: gscore
-      GSUID_CORE_PORT: "8765"
-      GSUID_CORE_BOTID: NoneBot2-QQOfficial
-      GSUID_CORE_WS_TOKEN: ${GSCORE_WS_TOKEN:-}
-      QQ_APP_ID: ${QQ_APP_ID:-}
-      QQ_APP_SECRET: ${QQ_APP_SECRET:-}
-      QQ_TOKEN: ${QQ_TOKEN:-}
-      QQ_IS_SANDBOX: ${QQ_IS_SANDBOX:-false}
-      NONEBOT_PYTHON_INDEX: ${NONEBOT_PYTHON_INDEX:-https://pypi.org/simple/}
-      NONEBOT_COMMAND_START: ${NONEBOT_COMMAND_START:-/}
-    expose:
-      - "8080"
-    volumes:
-      - ${DATA_ROOT:-/opt/nag-data}/nonebot-qqofficial/data:/app/data
-      - ${DATA_ROOT:-/opt/nag-data}/nonebot-qqofficial/plugins:/app/plugins
-      - ${DATA_ROOT:-/opt/nag-data}/nonebot-qqofficial/site-packages:/app/site-packages
-    depends_on:
-      - gscore
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - import socket; s=socket.create_connection(("127.0.0.1",8080),3); s.close()
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 30s
-    networks:
-      - nag-net
 
   napcat:
     image: ${NAPCAT_IMAGE:-mlikiowa/napcat-docker:latest}
@@ -183,19 +152,111 @@ services:
       service: napcat-gscore-adapter-init
 
   napcat-gscore-adapter-disable:
-    extends:
-      file: docker-compose.nonebot.yml
-      service: napcat-gscore-adapter-disable
+    image: alpine:latest
+    container_name: nag-napcat-gscore-adapter-disable
+    profiles:
+      - init
+    environment:
+      NAPCAT_UID: ${NAPCAT_UID:-1000}
+      NAPCAT_GID: ${NAPCAT_GID:-1000}
+    entrypoint:
+      - /bin/sh
+      - -lc
+    command:
+      - |
+        set -eu
+        apk add --no-cache jq
+        plugins_file=/config/plugins.json
+        config_file=/config/plugins/napcat-plugin-gscore-adapter/config.json
+
+        if [ -s "$$plugins_file" ]; then
+          jq '.["napcat-plugin-gscore-adapter"] = false' \
+            "$$plugins_file" >"$$plugins_file.tmp"
+          mv "$$plugins_file.tmp" "$$plugins_file"
+        fi
+        if [ -s "$$config_file" ]; then
+          jq '.gscoreEnable = false' "$$config_file" >"$$config_file.tmp"
+          mv "$$config_file.tmp" "$$config_file"
+        fi
+        [ ! -e "$$plugins_file" ] || chown "$$NAPCAT_UID:$$NAPCAT_GID" "$$plugins_file"
+        [ ! -e "$$config_file" ] || chown "$$NAPCAT_UID:$$NAPCAT_GID" "$$config_file"
+        echo "NapCat GScore adapter disabled; another selected adapter owns GScore."
+    volumes:
+      - ${DATA_ROOT:-/opt/nag-data}/napcat/config:/config
+    networks:
+      - nag-net
 
   gscore-xwuid-deps-init:
-    extends:
-      file: docker-compose.nonebot.yml
-      service: gscore-xwuid-deps-init
+    image: ${GSCORE_IMAGE:-docker.cnb.cool/gscore-mirror/gsuid_core:latest}
+    container_name: nag-gscore-xwuid-deps-init
+    profiles:
+      - init
+    environment:
+      <<: *common-env
+      GSCORE_XWUID_PYTHON_PACKAGES: ${GSCORE_XWUID_PYTHON_PACKAGES:-playwright opencv-python fonttools pypinyin}
+      UV_INDEX: ${GSCORE_PYTHON_INDEX:-https://pypi.org/simple/}
+      UV_NO_CONFIG: ${UV_NO_CONFIG:-0}
+      PLAYWRIGHT_BROWSERS_PATH: ${PLAYWRIGHT_BROWSERS_PATH:-/ms-playwright}
+      http_proxy: ${GSCORE_HTTP_PROXY:-}
+      https_proxy: ${GSCORE_HTTPS_PROXY:-}
+      no_proxy: ${GSCORE_NO_PROXY:-localhost,127.0.0.1,gscore,nonebot,botshepherd,napcat,.local,cnb.cool,mirrors.aliyun.com,pypi.tuna.tsinghua.edu.cn,mirrors.volces.com}
+    working_dir: /gsuid_core
+    entrypoint:
+      - /bin/sh
+      - -lc
+    command:
+      - |
+        set -eu
+        if [ ! -x /venv/bin/python ]; then
+          echo "Missing /venv/bin/python. Start gscore once first: docker compose up -d gscore"
+          exit 1
+        fi
+        uv pip install --python /venv/bin/python $$GSCORE_XWUID_PYTHON_PACKAGES
+        uv run --python /venv/bin/python playwright install chromium
+    volumes:
+      - ${DATA_ROOT:-/opt/nag-data}/gscore/data:/gsuid_core/data
+      - ${DATA_ROOT:-/opt/nag-data}/gscore/plugins:/gsuid_core/gsuid_core/plugins
+      - gscore-venv:/venv
+      - gscore-playwright:/ms-playwright
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - nag-net
 
   gscore-plugin-init:
-    extends:
-      file: docker-compose.nonebot.yml
-      service: gscore-plugin-init
+    image: alpine/git:latest
+    container_name: nag-gscore-plugin-init
+    profiles:
+      - init
+    entrypoint:
+      - /bin/sh
+      - -lc
+    command:
+      - |
+        set -eu
+        mkdir -p /plugins
+
+        clone_or_update() {
+          repo="$$1"
+          dir="$$2"
+          target="/plugins/$$dir"
+
+          if [ -d "$$target/.git" ]; then
+            git -C "$$target" pull --ff-only
+          elif [ -e "$$target" ]; then
+            echo "Skip $$target: exists but is not a git repo"
+          else
+            git clone --depth=1 "$$repo" "$$target"
+          fi
+        }
+
+        clone_or_update ${XUTHERINGWAVESUID_REPO:-https://github.com/Loping151/XutheringWavesUID.git} XutheringWavesUID
+        clone_or_update ${ROVERSIGN_REPO:-https://github.com/Loping151/RoverSign.git} RoverSign
+        clone_or_update ${SCOREECHO_REPO:-https://github.com/Loping151/ScoreEcho.git} ScoreEcho
+    volumes:
+      - ${DATA_ROOT:-/opt/nag-data}/gscore/plugins:/plugins
+    networks:
+      - nag-net
 
   guided-onebot-init:
     image: python:3.12-slim
