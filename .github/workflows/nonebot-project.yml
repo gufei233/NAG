@@ -1,0 +1,30 @@
+name: NoneBot project
+
+# 这个 job 需要 uv、PyPI 与 GitHub 网络，跑满一次要几分钟；放在定时与手动触发
+# 里，避免拖慢每个 PR 的反馈。改动生成逻辑本身时会被 paths 过滤命中。
+on:
+  schedule:
+    - cron: "37 18 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "scripts/prepare-nonebot-official-project.sh"
+      - "scripts/patch-nonebot-dockerfile.py"
+      - "scripts/register-mimo-agent-instance.sh"
+      - "scripts/build-mimo-agent-config.py"
+      - "tests/test-nonebot-official-project.sh"
+      - "tests/test-mimo-agent-config.py"
+
+jobs:
+  generate:
+    name: Generate official nb-cli projects
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      # 同时覆盖 personal/official 两种项目，以及把 GenshinUID 从既有项目中摘除
+      - name: Generate and assert both project kinds
+        run: bash tests/test-nonebot-official-project.sh

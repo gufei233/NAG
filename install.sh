@@ -131,11 +131,10 @@ retry_transient() {
     if "$@"; then
       return 0
     fi
-    if ((attempt < PULL_RETRY_ATTEMPTS)); then
-      warn "${label}失败（第 ${attempt}/${PULL_RETRY_ATTEMPTS} 次尝试），${delay} 秒后重试"
-      sleep "$delay"
-      delay=$((delay * 2))
-    fi
+    ((attempt < PULL_RETRY_ATTEMPTS)) || break
+    warn "${label}失败（第 ${attempt}/${PULL_RETRY_ATTEMPTS} 次尝试），${delay} 秒后重试"
+    sleep "$delay"
+    delay=$((delay * 2))
   done
   die "${label}连续 ${PULL_RETRY_ATTEMPTS} 次失败；请检查网络或镜像加速配置后重跑本脚本（可用 NAG_PULL_RETRIES 调整重试次数）"
 }
@@ -328,6 +327,12 @@ while (($# > 0)); do
       ;;
     --target)
       (($# >= 2)) || die "--target 需要一个值"
+      # 在此校验而非等到 uninstall_mode：无部署时那里会提前返回 0，
+      # 拼错的 --target 会被静默当成“无需卸载”而不是报错。
+      case "$2" in
+        nag|ng|nag-qqofficial|all) ;;
+        *) die "--target 仅支持 nag、ng、nag-qqofficial 或 all" ;;
+      esac
       UNINSTALL_TARGET="$2"
       shift 2
       ;;
@@ -939,6 +944,8 @@ docker_hub_image() {
 
 # NapCat 必须停留在 v4.18.5：v4.18.6+ 的官方插件白名单会屏蔽 GScore 适配器。
 # 仓库名与 tag 锁死，但允许 registry 主机名前缀，以便大陆网络改用镜像加速。
+# 前缀只放行主机名字符（含 : 以支持 registry.example.com:5000 这类带端口的
+# 私有仓库）；因此不含 / 的伪装（如 evil.com/x/mlikiowa/...）会被挡下。
 napcat_image_is_pinned() {
   local image="$1"
   local host
@@ -1407,6 +1414,7 @@ nag_containers_running() {
 verify_registry_mirror() {
   local probe_image="alpine:latest"
 
+  # 探测是尽力而为：缺 timeout（如部分 BusyBox 环境）就跳过，不阻断安装
   command -v timeout >/dev/null 2>&1 || return 0
   log "验证镜像加速能否真正拉取镜像（${probe_image}）"
   if timeout 90 "$DOCKER_BIN" pull -q "$probe_image" >/dev/null 2>&1; then
@@ -1476,11 +1484,9 @@ print(json.dumps(data, indent=2, ensure_ascii=False))
       warn "解析 ${daemon_json} 失败（可能不是合法 JSON）；请手动加入 registry-mirrors 后重启 Docker"
       return 0
     fi
-    # 保留首个备份不被后续运行覆盖，避免把用户的原始配置弄丢
-    if [[ -f "${daemon_json}.bak-nag" ]]; then
-      as_root cp "$daemon_json" \
-        "${daemon_json}.bak-nag.$(date +%Y%m%d%H%M%S)"
-    else
+    # 保留首个备份不被后续运行覆盖，避免把用户的原始配置弄丢；
+    # 已有备份时不再重复写，防止反复运行堆积一堆备份文件。
+    if [[ ! -f "${daemon_json}.bak-nag" ]]; then
       as_root cp "$daemon_json" "${daemon_json}.bak-nag"
     fi
     as_root cp "$merged_tmp" "$daemon_json"
@@ -3458,6 +3464,8 @@ EOF
   local gscore_ws_token
   local napcat_image
   napcat_image="$(docker_hub_image "${NAPCAT_COMPAT_REPOSITORY}:latest")"
+  local astrbot_image
+  astrbot_image="$(docker_hub_image soulter/astrbot:latest)"
 
   napcat_port="$(env_value NAPCAT_WEBUI_PORT "$existing_env_file" || true)"
   napcat_port="${napcat_port:-6099}"
@@ -3907,7 +3915,7 @@ NAPCAT_MAC=$napcat_mac
 NAPCAT_MASTER_QQ=$personal_masters
 NAPCAT_IMAGE=$napcat_image
 GSCORE_IMAGE=docker.cnb.cool/gscore-mirror/gsuid_core:latest
-ASTRBOT_IMAGE=$(docker_hub_image soulter/astrbot:latest)
+ASTRBOT_IMAGE=$astrbot_image
 BOTSHEPHERD_IMAGE=$BOTSHEPHERD_IMAGE_DEFAULT
 GSCORE_QQOFFICIAL_IMAGE=nag-gscore-qqofficial:0.7.0-2d582f6
 GSCORE_QQOFFICIAL_BUILD_CONTEXT=$(github_download_url "https://github.com/An-Sun110/gscore-qqofficial.git")#$GSCORE_QQOFFICIAL_COMMIT
@@ -5383,6 +5391,8 @@ if [[ "$ADAPTER_KIND" == "napcat" ]]; then
 else
   NAPCAT_IMAGE="$(docker_hub_image "${NAPCAT_COMPAT_REPOSITORY}:latest")"
 fi
+# 在写入 heredoc 之前解析，避免把命令替换留在 env 模板里（失败时会静默写入空值）
+ASTRBOT_IMAGE="$(docker_hub_image soulter/astrbot:latest)"
 
 print_summary() {
   cat <<EOF
@@ -5483,7 +5493,7 @@ NAPCAT_MAC=$NAPCAT_MAC
 NAPCAT_ACCOUNT=$NAPCAT_ACCOUNT
 NAPCAT_MASTER_QQ=$NAPCAT_MASTER_QQ
 GSCORE_IMAGE=docker.cnb.cool/gscore-mirror/gsuid_core:latest
-ASTRBOT_IMAGE=$(docker_hub_image soulter/astrbot:latest)
+ASTRBOT_IMAGE=$ASTRBOT_IMAGE
 BOTSHEPHERD_IMAGE=$BOTSHEPHERD_IMAGE_DEFAULT
 NAPCAT_IMAGE=$NAPCAT_IMAGE
 ENABLE_NONEBOT_GSCORE_ADAPTER=$([[ "$ADAPTER_KIND" == "nonebot" ]] && printf true || printf false)

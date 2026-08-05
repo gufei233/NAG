@@ -140,6 +140,8 @@ jobs:
           echo "dry-run left no state behind"
 
       - name: Reject invalid input
+        env:
+          LC_ALL: C.UTF-8
         run: |
           set -eu
           assert_fails() {
@@ -152,31 +154,23 @@ jobs:
           assert_fails --mode napcat --yes --no-cn --master-qq abc --dry-run
           assert_fails --mode nosuchmode --yes --no-cn --dry-run
           assert_fails --bogus-flag
+          assert_fails --mode napcat --yes --no-cn --master-qq
+          # --target 在参数解析阶段就校验，因此即便本机没有任何部署也应报错
           assert_fails --mode uninstall --target nosuchtarget --yes
 
       - name: Reject a critical DATA_ROOT
+        env:
+          LC_ALL: C.UTF-8
         run: |
           set -eu
           output="$(DATA_ROOT=/etc bash install.sh --mode qqofficial-direct \
             --yes --no-cn --no-game-plugins --dry-run 2>&1 || true)"
           printf '%s\n' "$output"
-          printf '%s\n' "$output" | grep -q '解析为系统关键路径' \
+          printf '%s\n' "$output" | grep -aqF '解析为系统关键路径' \
             || { echo "missing critical-path rejection" >&2; exit 1; }
           # die 发生在命令替换里时不应再打印无关的容器日志排查提示
-          if printf '%s\n' "$output" | grep -q '排查提示'; then
+          if printf '%s\n' "$output" | grep -aqF '排查提示'; then
             echo "input validation should not emit the container-log hint" >&2
             exit 1
           fi
           echo "critical DATA_ROOT rejected cleanly"
-
-  nonebot-project:
-    name: Official NoneBot project generation
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-
-      - name: Generate and assert both project kinds
-        run: bash tests/test-nonebot-official-project.sh
