@@ -41,8 +41,10 @@ readonly CN_APT_MIRROR_BASE_DEFAULT="https://mirrors.aliyun.com"
 readonly CN_GITHUB_PROXY_PREFIX_DEFAULT="https://ghfast.top/"
 # Docker Hub 加速。daemon.json 的 registry-mirrors 在部分网络下只能取到
 # manifest 却拉不动 blob；此时可用 NAG_DOCKER_REGISTRY_PREFIX 直接改写镜像名
-# 前缀（例如 docker.m.daocloud.io），走同一镜像源但绕开回源鉴权。
-readonly CN_DOCKER_REGISTRY_MIRRORS_DEFAULT="https://docker.m.daocloud.io,https://docker.1ms.run"
+# 前缀（例如 dockerproxy.net），走同一镜像源但绕开回源鉴权。
+# 顺序即优先级，按实测拉取速度排：dockerproxy.net 明显快于 daocloud，而原先
+# 默认里的 docker.1ms.run 实测几乎拉不动，已移出默认。
+readonly CN_DOCKER_REGISTRY_MIRRORS_DEFAULT="https://dockerproxy.net,https://docker.m.daocloud.io"
 # GHCR 加速。daemon.json 的 registry-mirrors 只代理 Docker Hub，对 ghcr.io 完全
 # 无效，所以 BotShepherd 与 uv 基础镜像在大陆网络下必须靠改写镜像名前缀提速。
 # 选南京大学开源镜像站：实测支持任意仓库（含个人仓库），且明显快于其他候选。
@@ -276,7 +278,7 @@ QQ 官方凭据可通过环境变量 QQ_APP_ID、QQ_APP_SECRET、QQ_TOKEN（仅 
 NAG_PLAYWRIGHT_DOWNLOAD_HOST、NAG_DEBIAN_MIRROR、NAG_GITHUB_PROXY_PREFIX 覆盖；
 除 NAG_PYTHON_INDEX 外，显式设为空字符串可分别禁用对应镜像。
 若 daemon.json 的 registry-mirrors 只能取到 manifest 却拉不动镜像层，可设置
-NAG_DOCKER_REGISTRY_PREFIX=docker.m.daocloud.io 直接改写 Docker Hub 镜像名前缀。
+NAG_DOCKER_REGISTRY_PREFIX=dockerproxy.net 直接改写 Docker Hub 镜像名前缀。
 GHCR 镜像可用 NAG_GHCR_REGISTRY_PREFIX 改写（大陆网络默认 ghcr.nju.edu.cn）。
 拉取与构建失败会自动退避重试，次数可用 NAG_PULL_RETRIES 调整（默认 3）。
 仅发布在 GHCR 的镜像可用 BOTSHEPHERD_IMAGE、MIMO_AGENT_UV_BASE_IMAGE 覆盖。
@@ -933,7 +935,7 @@ docker_registry_prefix() {
   fi
 }
 
-# 给 Docker Hub 官方镜像名加上加速前缀（如 docker.m.daocloud.io）。
+# 给 Docker Hub 官方镜像名加上加速前缀（如 dockerproxy.net）。
 # 默认留空：不改写，仍走 daemon.json 的 registry-mirrors。
 docker_hub_image() {
   local image="$1"
@@ -1451,7 +1453,7 @@ verify_registry_mirror() {
   fi
   warn "已写入镜像加速，但试拉 ${probe_image} 未在 90 秒内完成"
   warn "部分公共加速器只代理 manifest；可改用镜像名前缀重跑，例如："
-  warn "  NAG_DOCKER_REGISTRY_PREFIX=docker.m.daocloud.io bash install.sh --cn"
+  warn "  NAG_DOCKER_REGISTRY_PREFIX=dockerproxy.net bash install.sh --cn"
   return 0
 }
 
