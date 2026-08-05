@@ -49,7 +49,10 @@ services:
       - ${DATA_ROOT:-/opt/nag-data}/napcat/config:/app/napcat/config
       - ${DATA_ROOT:-/opt/nag-data}/napcat/plugins:/app/napcat/plugins
       - ${DATA_ROOT:-/opt/nag-data}/napcat/qq:/app/.config/QQ
-      - ${DATA_ROOT:-/opt/nag-data}/astrbot:/AstrBot/data
+      # guided 不使用 NapCat 镜像的 MODE=astrbot 自动写配置（改由
+      # guided-onebot-init 直接写 onebot11*.json），因此这里不挂 AstrBot 数据，
+      # 避免 NapCat 拿到 AstrBot 的密码哈希与 LLM 凭据。
+      # 只读共享 NoneBot 的媒体缓存，供转发本地文件路径使用。
       - ${DATA_ROOT:-/opt/nag-data}/nonebot/cache:/root/.cache/nonebot2:ro
     networks:
       - nag-net

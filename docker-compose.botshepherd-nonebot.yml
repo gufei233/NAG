@@ -5,7 +5,7 @@ services:
     restart: unless-stopped
     environment:
       TZ: ${TZ:-Asia/Shanghai}
-      BS_SUPERUSERS: ${NAPCAT_MASTER_QQ:?Set NAPCAT_MASTER_QQ in .env}
+      BS_SUPERUSERS: ${NAPCAT_MASTER_QQ:?Set NAPCAT_MASTER_QQ (installer writes it to .installer/*.env)}
       BS_WEB_USERNAME: ${BOTSHEPHERD_WEB_USERNAME:-admin}
       BS_WEB_PASSWORD: ${BOTSHEPHERD_WEB_PASSWORD:-}
       BS_WEB_PORT: "5111"

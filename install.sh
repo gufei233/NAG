@@ -4,12 +4,27 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
+# 本脚本大量使用 "${array[@]}" 展开可能为空的数组；该写法在 set -u 下需要
+# bash 4.4+，更旧的版本（如 CentOS 7 的 4.2）会报 unbound variable。
+if ((BASH_VERSINFO[0] < 4 \
+  || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4))); then
+  printf '[NAG] 错误：需要 bash 4.4 或更高版本，当前为 %s\n' \
+    "${BASH_VERSION}" >&2
+  exit 1
+fi
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 readonly STATE_DIR="${NAG_INSTALL_STATE_DIR:-${SCRIPT_DIR}/.installer}"
 readonly PREFLIGHT_STATE_FILE="${STATE_DIR}/preflight.env"
 readonly DOCKER_BIN="${NAG_DOCKER_BIN:-docker}"
-readonly NAPCAT_COMPAT_IMAGE="mlikiowa/napcat-docker:v4.18.5"
+readonly NAPCAT_COMPAT_REPOSITORY="mlikiowa/napcat-docker"
+readonly NAPCAT_COMPAT_TAG="v4.18.5"
+readonly NAPCAT_COMPAT_IMAGE="${NAPCAT_COMPAT_REPOSITORY}:${NAPCAT_COMPAT_TAG}"
+# 官方 nb-cli-plugin-docker 生成的 compose 使用 !override 标签，需 Compose 2.24+。
+readonly MIN_COMPOSE_VERSION="2.24.0"
+# 公共镜像源与 GitHub 在大陆网络下常见瞬时失败；拉取/构建是幂等操作，可重试。
+readonly PULL_RETRY_ATTEMPTS="${NAG_PULL_RETRIES:-3}"
 readonly NAPCAT_ADAPTER_LEGACY_LATEST_URL="https://github.com/xiowo/napcat-plugin-gscore-adapter/releases/latest/download/napcat-plugin-gscore-adapter.zip"
 readonly NAPCAT_ADAPTER_PINNED_URL="https://github.com/xiowo/napcat-plugin-gscore-adapter/releases/download/v1.3.3/napcat-plugin-gscore-adapter.zip"
 readonly NAPCAT_ADAPTER_PINNED_SHA256="1776762d0ed8d16ddb8228b98f599c5fa9d166c4a34df5bb0c8f1e2ddd2387ef"
@@ -24,6 +39,10 @@ readonly CN_PLAYWRIGHT_DOWNLOAD_HOST_DEFAULT="https://registry.npmmirror.com/-/b
 readonly CN_DEBIAN_MIRROR_DEFAULT="mirrors.aliyun.com"
 readonly CN_APT_MIRROR_BASE_DEFAULT="https://mirrors.aliyun.com"
 readonly CN_GITHUB_PROXY_PREFIX_DEFAULT="https://ghfast.top/"
+# Docker Hub 加速。daemon.json 的 registry-mirrors 在部分网络下只能取到
+# manifest 却拉不动 blob；此时可用 NAG_DOCKER_REGISTRY_PREFIX 直接改写镜像名
+# 前缀（例如 docker.m.daocloud.io），走同一镜像源但绕开回源鉴权。
+readonly CN_DOCKER_REGISTRY_MIRRORS_DEFAULT="https://docker.m.daocloud.io,https://docker.1ms.run"
 readonly DATA_ROOT_MARKER_NAME=".nag-managed-data-root"
 readonly DATA_ROOT_MARKER_VALUE="NAG_DATA_ROOT_V1"
 readonly INSTALL_LOCK_DIR="${STATE_DIR}/install.lock"
@@ -45,6 +64,10 @@ PURGE_STATE=0
 NONEBOT_PLUGIN_INPUT=""
 NONEBOT_PLUGIN_IMPORT=""
 NONEBOT_PLUGIN_TARGET=""
+# 空=交互提问；1/0=由 --game-plugins / --no-game-plugins 强制，使 --yes
+# 无人值守安装不必总是走 Playwright + Chromium 这条最重的路径。
+GAME_PLUGINS_OVERRIDE=""
+GAME_PLUGIN_DEPS_OVERRIDE=""
 
 log() {
   printf '[NAG] %s\n' "$*"
@@ -79,6 +102,10 @@ die() {
   exit 1
 }
 
+# 注意：die 在命令替换里只会结束子 shell。调用形如 x="$(可能 die 的函数)" 时
+# 必须显式追加 || exit 1，否则赋值失败会触发下面的 ERR trap，在真正的错误
+# 说明后再打印一段无关的排查提示，误导使用者。
+
 # set -E 使 ERR trap 传播进函数与子 shell；die 走 exit 不触发本 trap，
 # 因此只有未被兜底的命令失败才会打印这段排查提示。
 on_error() {
@@ -90,6 +117,28 @@ on_error() {
   printf '[NAG] 排查提示：可运行 docker compose -p <项目名> logs --tail 100 查看容器日志（项目名通常为 nag、ng 或 nag-qqofficial）\n' >&2
 }
 trap 'on_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
+
+# 公共镜像源常见瞬时故障（unexpected EOF、429 限流、连接超时），而拉取与构建
+# 都是幂等操作。失败即中断会让用户在答完全部问题、拉完数 GB 之后前功尽弃，
+# 因此这里按指数退避重试，仍失败才终止。
+retry_transient() {
+  local label="$1"
+  local attempt
+  local delay=5
+  shift
+
+  for ((attempt = 1; attempt <= PULL_RETRY_ATTEMPTS; attempt++)); do
+    if "$@"; then
+      return 0
+    fi
+    if ((attempt < PULL_RETRY_ATTEMPTS)); then
+      warn "${label}失败（第 ${attempt}/${PULL_RETRY_ATTEMPTS} 次尝试），${delay} 秒后重试"
+      sleep "$delay"
+      delay=$((delay * 2))
+    fi
+  done
+  die "${label}连续 ${PULL_RETRY_ATTEMPTS} 次失败；请检查网络或镜像加速配置后重跑本脚本（可用 NAG_PULL_RETRIES 调整重试次数）"
+}
 
 release_installer_lock() {
   [[ -d "$INSTALL_LOCK_DIR" && ! -L "$INSTALL_LOCK_DIR" ]] || return 0
@@ -199,6 +248,12 @@ NAG/NG 交互式部署与维护脚本。
   --cn          按中国大陆网络环境处理（覆盖 Docker、系统包、uv/Python/PyPI、
                 Playwright、GitHub 与已知插件仓库）
   --no-cn       强制按国际网络环境处理
+  --game-plugins
+                强制安装或更新 GsCore 鸣潮插件套件，跳过相关提问
+  --no-game-plugins
+                强制跳过鸣潮插件套件（含其额外依赖）；--yes 无人值守推荐
+  --no-game-plugin-deps
+                安装插件本体，但跳过 Playwright、OpenCV、Chromium 等重型依赖
   --target T    配合 --mode uninstall 使用：nag、ng、nag-qqofficial 或 all
   --plugin SPEC 仅兼容旧版 NAG NoneBot；官方 Docker 项目请在 Mimo Console 中管理
   --plugin-import MODULE
@@ -217,7 +272,11 @@ QQ 官方凭据可通过环境变量 QQ_APP_ID、QQ_APP_SECRET、QQ_TOKEN（仅 
 镜像可通过 NAG_APT_MIRROR_BASE、NAG_PYTHON_INDEX、NAG_UV_PYTHON_INSTALL_MIRROR、
 NAG_PLAYWRIGHT_DOWNLOAD_HOST、NAG_DEBIAN_MIRROR、NAG_GITHUB_PROXY_PREFIX 覆盖；
 除 NAG_PYTHON_INDEX 外，显式设为空字符串可分别禁用对应镜像。
+若 daemon.json 的 registry-mirrors 只能取到 manifest 却拉不动镜像层，可设置
+NAG_DOCKER_REGISTRY_PREFIX=docker.m.daocloud.io 直接改写 Docker Hub 镜像名前缀。
+拉取与构建失败会自动退避重试，次数可用 NAG_PULL_RETRIES 调整（默认 3）。
 仅发布在 GHCR 的镜像可用 BOTSHEPHERD_IMAGE、MIMO_AGENT_UV_BASE_IMAGE 覆盖。
+需要 bash 4.4+、Docker Compose 2.24+。
 EOF
 }
 
@@ -252,6 +311,19 @@ while (($# > 0)); do
       ;;
     --no-cn)
       NAG_CN_MODE=0
+      shift
+      ;;
+    --game-plugins)
+      GAME_PLUGINS_OVERRIDE=1
+      shift
+      ;;
+    --no-game-plugins)
+      GAME_PLUGINS_OVERRIDE=0
+      GAME_PLUGIN_DEPS_OVERRIDE=0
+      shift
+      ;;
+    --no-game-plugin-deps)
+      GAME_PLUGIN_DEPS_OVERRIDE=0
       shift
       ;;
     --target)
@@ -380,6 +452,29 @@ env_value() {
   local file="$2"
   [[ -f "$file" ]] || return 0
   awk -F= -v key="$key" '$1 == key {sub(/^[^=]*=/, ""); sub(/\r$/, ""); print; exit}' "$file"
+}
+
+# GsCore 游戏插件（鸣潮套件）的安装意愿：命令行覆盖优先，否则沿用交互提问。
+should_install_game_plugins() {
+  local prompt="$1"
+  local default="$2"
+
+  case "$GAME_PLUGINS_OVERRIDE" in
+    1) return 0 ;;
+    0) return 1 ;;
+  esac
+  prompt_yes_no "$prompt" "$default"
+}
+
+should_install_game_plugin_deps() {
+  local prompt="$1"
+  local default="${2:-y}"
+
+  case "$GAME_PLUGIN_DEPS_OVERRIDE" in
+    1) return 0 ;;
+    0) return 1 ;;
+  esac
+  prompt_yes_no "$prompt" "$default"
 }
 
 guided_state_valid() {
@@ -561,7 +656,7 @@ mark_data_root() {
   local entry
   local name
 
-  normalized="$(normalize_data_root "$data_root")"
+  normalized="$(normalize_data_root "$data_root")" || exit 1
   marker="${normalized}/${DATA_ROOT_MARKER_NAME}"
   if [[ -e "$marker" ]]; then
     if [[ -f "$marker" && ! -L "$marker" ]] \
@@ -820,6 +915,39 @@ github_download_url() {
   else
     printf '%s' "$url"
   fi
+}
+
+docker_registry_prefix() {
+  if [[ "${NAG_DOCKER_REGISTRY_PREFIX+x}" == x ]]; then
+    printf '%s' "$NAG_DOCKER_REGISTRY_PREFIX"
+  fi
+}
+
+# 给 Docker Hub 官方镜像名加上加速前缀（如 docker.m.daocloud.io）。
+# 默认留空：不改写，仍走 daemon.json 的 registry-mirrors。
+docker_hub_image() {
+  local image="$1"
+  local prefix
+
+  prefix="$(docker_registry_prefix)"
+  if [[ -z "$prefix" ]]; then
+    printf '%s' "$image"
+    return 0
+  fi
+  printf '%s/%s' "${prefix%/}" "$image"
+}
+
+# NapCat 必须停留在 v4.18.5：v4.18.6+ 的官方插件白名单会屏蔽 GScore 适配器。
+# 仓库名与 tag 锁死，但允许 registry 主机名前缀，以便大陆网络改用镜像加速。
+napcat_image_is_pinned() {
+  local image="$1"
+  local host
+
+  [[ "$image" != "$NAPCAT_COMPAT_IMAGE" ]] || return 0
+  [[ "$image" == */"$NAPCAT_COMPAT_IMAGE" ]] || return 1
+  host="${image%/"$NAPCAT_COMPAT_IMAGE"}"
+  [[ "$host" != *[!A-Za-z0-9.:-]* ]] || return 1
+  [[ -n "$host" ]]
 }
 
 uv_installer_github_base_url() {
@@ -1208,8 +1336,26 @@ ensure_docker_daemon() {
   die "无法连接 Docker 守护进程；请手动检查：systemctl status docker（或 service docker status）"
 }
 
+compose_version_at_least() {
+  local required="$1"
+  local actual
+
+  actual="$("$DOCKER_BIN" compose version --short 2>/dev/null || true)"
+  actual="${actual#v}"
+  # 读不到版本号时不阻断安装，避免因输出格式变化误伤
+  [[ -n "$actual" ]] || return 0
+  [[ "$(printf '%s\n%s\n' "$required" "$actual" | sort -V | head -n 1)" \
+    == "$required" ]]
+}
+
+require_compose_version() {
+  compose_version_at_least "$MIN_COMPOSE_VERSION" && return 0
+  die "需要 Docker Compose ${MIN_COMPOSE_VERSION} 或更高版本（当前 $("$DOCKER_BIN" compose version --short 2>/dev/null || printf 未知)）；官方 NoneBot 项目生成的 compose 使用 !override 标签，更旧版本无法解析。可重跑 Docker 官方安装脚本升级：curl -fsSL https://get.docker.com | sh"
+}
+
 ensure_compose_plugin() {
   if "$DOCKER_BIN" compose version >/dev/null 2>&1; then
+    require_compose_version
     return 0
   fi
   warn "检测到 Docker 但缺少 Compose V2 插件"
@@ -1217,6 +1363,7 @@ ensure_compose_plugin() {
     if pkg_install docker-compose-plugin \
       && "$DOCKER_BIN" compose version >/dev/null 2>&1; then
       log "Docker Compose V2 安装完成"
+      require_compose_version
       return 0
     fi
     warn "docker-compose-plugin 安装未成功"
@@ -1254,9 +1401,27 @@ nag_containers_running() {
   return 1
 }
 
+# registry-mirrors 只代理 manifest、拉不动镜像层是常见故障，症状是长时间卡住
+# 而不是明确报错。这里用最小镜像做一次实拉，失败就指出可改用镜像名前缀。
+# alpine 本身也是多个 init 容器的基础镜像，这次拉取不会浪费。
+verify_registry_mirror() {
+  local probe_image="alpine:latest"
+
+  command -v timeout >/dev/null 2>&1 || return 0
+  log "验证镜像加速能否真正拉取镜像（${probe_image}）"
+  if timeout 90 "$DOCKER_BIN" pull -q "$probe_image" >/dev/null 2>&1; then
+    log "镜像加速可用"
+    return 0
+  fi
+  warn "已写入镜像加速，但试拉 ${probe_image} 未在 90 秒内完成"
+  warn "部分公共加速器只代理 manifest；可改用镜像名前缀重跑，例如："
+  warn "  NAG_DOCKER_REGISTRY_PREFIX=docker.m.daocloud.io bash install.sh --cn"
+  return 0
+}
+
 configure_registry_mirror() {
   local daemon_json="/etc/docker/daemon.json"
-  local mirrors_default="https://docker.1ms.run,https://docker.m.daocloud.io"
+  local mirrors_default="$CN_DOCKER_REGISTRY_MIRRORS_DEFAULT"
   local mirrors_csv=""
   local mirrors_json=""
   local mirror
@@ -1265,6 +1430,7 @@ configure_registry_mirror() {
 
   if "$DOCKER_BIN" info 2>/dev/null | grep -qi 'Registry Mirrors'; then
     log "Docker 已配置镜像加速，跳过"
+    verify_registry_mirror
     return 0
   fi
   if [[ -f "$daemon_json" ]] && grep -q 'registry-mirrors' "$daemon_json" 2>/dev/null; then
@@ -1310,7 +1476,13 @@ print(json.dumps(data, indent=2, ensure_ascii=False))
       warn "解析 ${daemon_json} 失败（可能不是合法 JSON）；请手动加入 registry-mirrors 后重启 Docker"
       return 0
     fi
-    as_root cp "$daemon_json" "${daemon_json}.bak-nag"
+    # 保留首个备份不被后续运行覆盖，避免把用户的原始配置弄丢
+    if [[ -f "${daemon_json}.bak-nag" ]]; then
+      as_root cp "$daemon_json" \
+        "${daemon_json}.bak-nag.$(date +%Y%m%d%H%M%S)"
+    else
+      as_root cp "$daemon_json" "${daemon_json}.bak-nag"
+    fi
     as_root cp "$merged_tmp" "$daemon_json"
     rm -f "$merged_tmp"
   else
@@ -1330,6 +1502,7 @@ print(json.dumps(data, indent=2, ensure_ascii=False))
   restart_docker_daemon || die "Docker 重启后未就绪；请手动检查 systemctl status docker"
   if "$DOCKER_BIN" info 2>/dev/null | grep -qi 'Registry Mirrors'; then
     log "镜像加速已生效：${mirrors_csv}"
+    verify_registry_mirror
   else
     warn "已写入 ${daemon_json}，但当前守护进程尚未加载该配置；请手动重启 Docker 后生效"
   fi
@@ -2271,7 +2444,7 @@ install_qqofficial() {
     qq_api_base="https://api.sgroup.qq.com"
   fi
 
-  data_root="$(validated_data_root "$data_root")"
+  data_root="$(validated_data_root "$data_root")" || exit 1
   case "$bind_ip" in
     127.0.0.1|0.0.0.0) ;;
     *) die "BIND_IP 必须是 127.0.0.1 或 0.0.0.0" ;;
@@ -2289,9 +2462,9 @@ install_qqofficial() {
     die "QQ_ADMIN_IDS 必须是英文逗号分隔的 OpenID"
   fi
 
-  if prompt_yes_no "安装鸣潮插件套件（XutheringWavesUID、RoverSign、ScoreEcho）" y; then
+  if should_install_game_plugins "安装鸣潮插件套件（XutheringWavesUID、RoverSign、ScoreEcho）" y; then
     INSTALL_WUWA=1
-    if prompt_yes_no "安装 Playwright、OpenCV、字体、拼音和 Chromium 等额外依赖" y; then
+    if should_install_game_plugin_deps "安装 Playwright、OpenCV、字体、拼音和 Chromium 等额外依赖" y; then
       INSTALL_WUWA_DEPS=1
     else
       INSTALL_WUWA_DEPS=0
@@ -2362,7 +2535,6 @@ TZ=Asia/Shanghai
 GSCORE_PORT=$gscore_port
 MIMO_OFFICIAL_PORT=${MIMO_OFFICIAL_PORT:-18082}
 GSCORE_IMAGE=docker.cnb.cool/gscore-mirror/gsuid_core:latest
-NONEBOT_IMAGE=nag-nonebot:local
 GSCORE_QQOFFICIAL_IMAGE=nag-gscore-qqofficial:0.7.0-2d582f6
 GSCORE_QQOFFICIAL_BUILD_CONTEXT=$(github_download_url "https://github.com/An-Sun110/gscore-qqofficial.git")#$GSCORE_QQOFFICIAL_COMMIT
 QQ_APP_ID=$qq_app_id
@@ -2475,10 +2647,11 @@ EOF
 
   official_compose config --quiet
   log "拉取 GsCore 镜像"
-  official_compose pull gscore
+  retry_transient "拉取 GsCore 镜像" official_compose pull gscore
   if [[ "$route_kind" != "nonebot" ]]; then
     log "从固定的上游 commit 构建 gscore-qqofficial"
-    official_compose build gscore-qqofficial
+    retry_transient "构建 gscore-qqofficial" \
+      official_compose build gscore-qqofficial
   fi
 
   log "启动 GsCore"
@@ -2535,13 +2708,14 @@ PY
 
   if [[ "$route_kind" == "nonebot" ]]; then
     official_compose stop gscore-qqofficial >/dev/null 2>&1 || true
-    if [[ -n "$(official_compose ps -aq nonebot 2>/dev/null || true)" ]]; then
+    if remove_legacy_compose_container \
+      nag-qqofficial-nonebot nag-qqofficial nonebot; then
       log "移除旧版 NAG 自定义 NoneBot 服务"
-      official_compose rm --stop --force nonebot >/dev/null
     fi
     log "通过 nb docker build/up 启动 QQ 官方 NoneBot"
     connection_check_since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    official_nonebot_cli "$official_project" nag-nonebot-official build
+    retry_transient "构建 QQ 官方 NoneBot 镜像" \
+      official_nonebot_cli "$official_project" nag-nonebot-official build
     official_nonebot_cli "$official_project" nag-nonebot-official up -d
     for ((attempt = 1; attempt <= 60; attempt++)); do
       if "$DOCKER_BIN" exec nag-qqofficial-nonebot python -c \
@@ -2550,7 +2724,7 @@ PY
         nonebot_ready=1
         break
       fi
-      wait_progress "等待 AstrBot 创建 cmd_config.json" "$attempt" 60 2
+      wait_progress "等待 QQ 官方 NoneBot 就绪" "$attempt" 60 2
       sleep 2
     done
     clear_wait_progress
@@ -2589,7 +2763,10 @@ PY
       die "NoneBot 已连上 QQ，但 GenshinUID 120 秒内未连上 GsCore"
     fi
   else
-    official_compose stop nonebot >/dev/null 2>&1 || true
+    if remove_legacy_compose_container \
+      nag-qqofficial-nonebot nag-qqofficial nonebot; then
+      log "移除旧版 NAG 自定义 NoneBot 服务"
+    fi
     if [[ -f "${official_project}/docker-compose.yml" ]]; then
       official_nonebot_cli "$official_project" nag-nonebot-official down
     fi
@@ -2984,8 +3161,8 @@ install_guided() {
       && "$old_personal_adapter" != "astrbot" ]]; then
       if [[ "$(env_value ENABLE_NONEBOT_GSCORE_ADAPTER "$existing_env_file" || true)" == "true" ]]; then
         old_personal_adapter="nonebot"
-      elif [[ "$old_enable_astrbot" == "1" \
-        && "$old_napcat_image" != "$NAPCAT_COMPAT_IMAGE" ]]; then
+      elif [[ "$old_enable_astrbot" == "1" ]] \
+        && ! napcat_image_is_pinned "$old_napcat_image"; then
         old_personal_adapter="astrbot"
       else
         old_personal_adapter="napcat"
@@ -3279,7 +3456,8 @@ EOF
   local qq_is_sandbox
   local qq_api_base
   local gscore_ws_token
-  local napcat_image="mlikiowa/napcat-docker:latest"
+  local napcat_image
+  napcat_image="$(docker_hub_image "${NAPCAT_COMPAT_REPOSITORY}:latest")"
 
   napcat_port="$(env_value NAPCAT_WEBUI_PORT "$existing_env_file" || true)"
   napcat_port="${napcat_port:-6099}"
@@ -3373,7 +3551,7 @@ EOF
       fixed_mac=1
     fi
     if [[ "$personal_adapter" == "napcat" ]]; then
-      napcat_image="$NAPCAT_COMPAT_IMAGE"
+      napcat_image="$(docker_hub_image "$NAPCAT_COMPAT_IMAGE")"
     fi
   fi
 
@@ -3425,7 +3603,7 @@ EOF
     fi
   fi
 
-  data_root="$(validated_data_root "$data_root")"
+  data_root="$(validated_data_root "$data_root")" || exit 1
   case "$bind_ip" in
     127.0.0.1|0.0.0.0) ;;
     *) die "BIND_IP 必须是 127.0.0.1 或 0.0.0.0" ;;
@@ -3453,9 +3631,9 @@ EOF
     plugin_prompt="更新或补装鸣潮插件套件与额外依赖"
     plugin_default=n
   fi
-  if prompt_yes_no "$plugin_prompt" "$plugin_default"; then
+  if should_install_game_plugins "$plugin_prompt" "$plugin_default"; then
     INSTALL_WUWA=1
-    prompt_yes_no "安装 Playwright、OpenCV、字体、拼音和 Chromium 等额外依赖" y \
+    should_install_game_plugin_deps "安装 Playwright、OpenCV、字体、拼音和 Chromium 等额外依赖" y \
       && INSTALL_WUWA_DEPS=1 || INSTALL_WUWA_DEPS=0
   else
     INSTALL_WUWA=0
@@ -3729,8 +3907,7 @@ NAPCAT_MAC=$napcat_mac
 NAPCAT_MASTER_QQ=$personal_masters
 NAPCAT_IMAGE=$napcat_image
 GSCORE_IMAGE=docker.cnb.cool/gscore-mirror/gsuid_core:latest
-ASTRBOT_IMAGE=soulter/astrbot:latest
-NONEBOT_IMAGE=nag-nonebot:local
+ASTRBOT_IMAGE=$(docker_hub_image soulter/astrbot:latest)
 BOTSHEPHERD_IMAGE=$BOTSHEPHERD_IMAGE_DEFAULT
 GSCORE_QQOFFICIAL_IMAGE=nag-gscore-qqofficial:0.7.0-2d582f6
 GSCORE_QQOFFICIAL_BUILD_CONTEXT=$(github_download_url "https://github.com/An-Sun110/gscore-qqofficial.git")#$GSCORE_QQOFFICIAL_COMMIT
@@ -3772,12 +3949,13 @@ EOF
       "$data_root/napcat/config"
       "$data_root/napcat/plugins"
       "$data_root/napcat/qq"
-      "$data_root/astrbot"
     )
     # guided 的 napcat 无条件以只读挂载 nonebot/cache（用于共享 NoneBot 发送的
     # 本地媒体路径）；即便本次没启用 NoneBot 也先建好，避免 Docker 留下 root 属主目录。
     data_dirs+=("$data_root/nonebot/cache")
   fi
+  # AstrBot 数据只被 astrbot 及其 init 容器挂载；停用后目录保留，不再重复创建。
+  ((enable_astrbot)) && data_dirs+=("$data_root/astrbot")
   ((enable_nonebot)) && \
     data_dirs+=(
       "$data_root/nonebot/data"
@@ -3892,31 +4070,32 @@ EOF
 
   if ((force_reconcile)) || ! guided_service_exists gscore; then
     log "拉取共享 GsCore 镜像"
-    guided_compose pull gscore
+    retry_transient "拉取 GsCore 镜像" guided_compose pull gscore
   fi
   if ((use_personal)) \
     && { ((force_reconcile || personal_added || napcat_image_changed)) \
       || ! guided_service_exists napcat; }; then
     log "拉取所选 NapCat 镜像"
-    guided_compose pull napcat
+    retry_transient "拉取 NapCat 镜像" guided_compose pull napcat
   fi
   if ((enable_astrbot)) \
     && { ((force_reconcile || astrbot_added)) \
       || ! guided_service_exists astrbot; }; then
     log "拉取 AstrBot 镜像"
-    guided_compose pull astrbot
+    retry_transient "拉取 AstrBot 镜像" guided_compose pull astrbot
   fi
   if ((use_botshepherd)) \
     && { ((force_reconcile || botshepherd_added)) \
       || ! guided_service_exists botshepherd; }; then
     log "拉取 BotShepherd 镜像"
-    guided_compose pull botshepherd
+    retry_transient "拉取 BotShepherd 镜像" guided_compose pull botshepherd
   fi
   if ((enable_official_direct)) \
     && { ((force_reconcile || official_changed)) \
       || ! guided_service_exists gscore-qqofficial; }; then
     log "从固定的上游 commit 构建 gscore-qqofficial"
-    guided_compose build gscore-qqofficial
+    retry_transient "构建 gscore-qqofficial" \
+      guided_compose build gscore-qqofficial
   fi
 
   local apply_started_at
@@ -4057,7 +4236,8 @@ PY
   guided_compose up -d "${start_services[@]}"
   if ((enable_nonebot)); then
     log "通过 nb docker build/up 启动个人 QQ NoneBot"
-    official_nonebot_cli "$personal_project" nag-nonebot-personal build
+    retry_transient "构建个人 QQ NoneBot 镜像" \
+      official_nonebot_cli "$personal_project" nag-nonebot-personal build
     official_nonebot_cli "$personal_project" nag-nonebot-personal up -d
   elif [[ -f "${personal_project}/docker-compose.yml" ]]; then
     official_nonebot_cli "$personal_project" nag-nonebot-personal down
@@ -4069,7 +4249,8 @@ PY
   local official_check_since="$apply_started_at"
   if ((enable_official_nonebot)); then
     log "通过 nb docker build/up 启动 QQ 官方 NoneBot"
-    official_nonebot_cli "$official_project" nag-nonebot-official build
+    retry_transient "构建 QQ 官方 NoneBot 镜像" \
+      official_nonebot_cli "$official_project" nag-nonebot-official build
     official_nonebot_cli "$official_project" nag-nonebot-official up -d
     official_reconfigure=1
   elif ((enable_official_direct)); then
@@ -5086,7 +5267,7 @@ if ((USE_BOTSHEPHERD)); then
   BOTSHEPHERD_WEBUI_PORT="$(prompt_port "BotShepherd WebUI 端口" "$BOTSHEPHERD_WEBUI_PORT" "$(env_value BOTSHEPHERD_WEBUI_PORT "$ENV_FILE" || true)" "$BIND_IP")"
 fi
 
-DATA_ROOT="$(validated_data_root "$DATA_ROOT")"
+DATA_ROOT="$(validated_data_root "$DATA_ROOT")" || exit 1
 case "$BIND_IP" in
   127.0.0.1|0.0.0.0) ;;
   *) die "BIND_IP 必须是 127.0.0.1 或 0.0.0.0" ;;
@@ -5126,9 +5307,9 @@ else
   NAPCAT_MAC=""
 fi
 
-if prompt_yes_no "安装鸣潮插件套件（XutheringWavesUID、RoverSign、ScoreEcho）" y; then
+if should_install_game_plugins "安装鸣潮插件套件（XutheringWavesUID、RoverSign、ScoreEcho）" y; then
   INSTALL_WUWA=1
-  if prompt_yes_no "安装 Playwright、OpenCV、字体及拼音等额外依赖" y; then
+  if should_install_game_plugin_deps "安装 Playwright、OpenCV、字体及拼音等额外依赖" y; then
     INSTALL_WUWA_DEPS=1
   else
     INSTALL_WUWA_DEPS=0
@@ -5198,9 +5379,9 @@ for pair in \
 done
 
 if [[ "$ADAPTER_KIND" == "napcat" ]]; then
-  NAPCAT_IMAGE="$NAPCAT_COMPAT_IMAGE"
+  NAPCAT_IMAGE="$(docker_hub_image "$NAPCAT_COMPAT_IMAGE")"
 else
-  NAPCAT_IMAGE="mlikiowa/napcat-docker:latest"
+  NAPCAT_IMAGE="$(docker_hub_image "${NAPCAT_COMPAT_REPOSITORY}:latest")"
 fi
 
 print_summary() {
@@ -5302,8 +5483,7 @@ NAPCAT_MAC=$NAPCAT_MAC
 NAPCAT_ACCOUNT=$NAPCAT_ACCOUNT
 NAPCAT_MASTER_QQ=$NAPCAT_MASTER_QQ
 GSCORE_IMAGE=docker.cnb.cool/gscore-mirror/gsuid_core:latest
-ASTRBOT_IMAGE=soulter/astrbot:latest
-NONEBOT_IMAGE=nag-nonebot:local
+ASTRBOT_IMAGE=$(docker_hub_image soulter/astrbot:latest)
 BOTSHEPHERD_IMAGE=$BOTSHEPHERD_IMAGE_DEFAULT
 NAPCAT_IMAGE=$NAPCAT_IMAGE
 ENABLE_NONEBOT_GSCORE_ADAPTER=$([[ "$ADAPTER_KIND" == "nonebot" ]] && printf true || printf false)
@@ -5570,18 +5750,18 @@ if [[ "$ADAPTER_KIND" == "napcat" ]]; then
     in_napcat && /^  [^ ]/ {exit}
     in_napcat && /^    image:/ {sub(/^    image:[[:space:]]*/, ""); print; exit}
   ')"
-  [[ "$resolved_napcat_image" == "$NAPCAT_COMPAT_IMAGE" ]] || \
-    die "NapCat 适配器模式解析到不安全的镜像：${resolved_napcat_image:-unknown}"
+  napcat_image_is_pinned "$resolved_napcat_image" || \
+    die "NapCat 适配器模式解析到不安全的镜像：${resolved_napcat_image:-unknown}（必须是 ${NAPCAT_COMPAT_IMAGE}，可带镜像加速主机名前缀）"
 fi
 
 log "拉取运行时镜像"
 if [[ "$FRAMEWORK_KIND" == "nonebot" ]]; then
-  compose pull gscore napcat
+  retry_transient "拉取 GsCore 与 NapCat 镜像" compose pull gscore napcat
   if ((USE_BOTSHEPHERD)); then
-    compose pull botshepherd
+    retry_transient "拉取 BotShepherd 镜像" compose pull botshepherd
   fi
 else
-  compose pull
+  retry_transient "拉取运行时镜像" compose pull
 fi
 
 log "启动 GsCore"
@@ -5641,12 +5821,12 @@ esac
 if [[ "$FRAMEWORK_KIND" == "nonebot" ]]; then
   log "配置 NapCat 反向 WebSocket 客户端（连接 NoneBot）"
   compose --profile init run --rm nonebot-onebot-init
-  if [[ -n "$(compose ps -aq nonebot 2>/dev/null || true)" ]]; then
+  if remove_legacy_compose_container nag-nonebot nag nonebot; then
     log "移除旧版 NAG 自定义 NoneBot 服务"
-    compose rm --stop --force nonebot >/dev/null
   fi
   log "通过 nb docker build/up 启动个人 QQ NoneBot"
-  official_nonebot_cli "$PERSONAL_NONEBOT_PROJECT" nag-nonebot-personal build
+  retry_transient "构建个人 QQ NoneBot 镜像" \
+    official_nonebot_cli "$PERSONAL_NONEBOT_PROJECT" nag-nonebot-personal build
   official_nonebot_cli "$PERSONAL_NONEBOT_PROJECT" nag-nonebot-personal up -d
   wait_nonebot_ready
   if ((USE_BOTSHEPHERD)); then

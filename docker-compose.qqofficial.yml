@@ -15,24 +15,9 @@ services:
       - gscore-venv:/venv
       - gscore-playwright:/ms-playwright
 
-  nonebot:
-    extends:
-      file: docker-compose.nonebot.yml
-      service: nonebot
-    container_name: nag-qqofficial-nonebot
-    environment:
-      NONEBOT_PLATFORM: qqofficial
-      NAPCAT_MASTER_QQ: ${QQ_ADMIN_IDS:-}
-      ENABLE_NONEBOT_GSCORE_ADAPTER: "true"
-      GSUID_CORE_BOTID: NoneBot2
-      QQ_APP_ID: ${QQ_APP_ID:?Set QQ_APP_ID in the private installer environment}
-      QQ_APP_SECRET: ${QQ_APP_SECRET:?Set QQ_APP_SECRET in the private installer environment}
-      QQ_TOKEN: ${QQ_TOKEN:-}
-      QQ_IS_SANDBOX: ${QQ_IS_SANDBOX:-false}
-    volumes:
-      - ${DATA_ROOT:-/opt/nag-qqofficial-data}/nonebot/data:/app/data
-      - ${DATA_ROOT:-/opt/nag-qqofficial-data}/nonebot/plugins:/app/plugins
-      - ${DATA_ROOT:-/opt/nag-qqofficial-data}/nonebot/site-packages:/app/site-packages
+  # QQ 官方 NoneBot 路线同样由 install.sh 用官方 nb-cli 生成独立项目
+  # （DATA_ROOT/nonebot/project），以 Compose 项目 nag-nonebot-official 运行，
+  # 并以网络别名 nonebot 接入本文件的 nag-qqofficial-net。
 
   gscore-qqofficial:
     image: ${GSCORE_QQOFFICIAL_IMAGE:-nag-gscore-qqofficial:0.7.0-2d582f6}
@@ -42,10 +27,10 @@ services:
     restart: unless-stopped
     init: true
     environment:
-      QQ_APP_ID: ${QQ_APP_ID:?Set QQ_APP_ID in the private installer environment}
-      QQ_APP_SECRET: ${QQ_APP_SECRET:?Set QQ_APP_SECRET in the private installer environment}
+      QQ_APP_ID: ${QQ_APP_ID:?Set QQ_APP_ID (installer writes it to .installer/*.env)}
+      QQ_APP_SECRET: ${QQ_APP_SECRET:?Set QQ_APP_SECRET (installer writes it to .installer/*.env)}
       GSCORE_URL: ws://gscore:8765/ws/QQOfficial
-      GSCORE_TOKEN: ${GSCORE_WS_TOKEN:?Set GSCORE_WS_TOKEN in the private installer environment}
+      GSCORE_TOKEN: ${GSCORE_WS_TOKEN:?Set GSCORE_WS_TOKEN (installer writes it to .installer/*.env)}
       QQ_ADMIN_IDS: ${QQ_ADMIN_IDS:-}
       QQ_API_BASE: ${QQ_API_BASE:-https://api.sgroup.qq.com}
       LOG_LEVEL: ${QQOFFICIAL_LOG_LEVEL:-INFO}

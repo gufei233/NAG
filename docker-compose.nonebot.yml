@@ -30,49 +30,9 @@ services:
     networks:
       - nag-net
 
-  nonebot:
-    image: ${NONEBOT_IMAGE:-nag-nonebot:local}
-    build:
-      context: ./nonebot
-      args:
-        PIP_INDEX_URL: ${NONEBOT_PYTHON_INDEX:-https://pypi.org/simple/}
-        NAG_DEBIAN_MIRROR: ${NAG_DEBIAN_MIRROR:-}
-    container_name: nag-nonebot
-    restart: unless-stopped
-    environment:
-      <<: *common-env
-      HOST: 0.0.0.0
-      PORT: "8080"
-      DRIVER: "~fastapi+~httpx+~websockets"
-      NAPCAT_MASTER_QQ: ${NAPCAT_MASTER_QQ:-}
-      ENABLE_NONEBOT_GSCORE_ADAPTER: ${ENABLE_NONEBOT_GSCORE_ADAPTER:-true}
-      GSUID_CORE_HOST: gscore
-      GSUID_CORE_PORT: "8765"
-      GSUID_CORE_BOTID: NoneBot2
-      GSUID_CORE_WS_TOKEN: ${GSCORE_WS_TOKEN:?Set GSCORE_WS_TOKEN in .env}
-      NONEBOT_PYTHON_INDEX: ${NONEBOT_PYTHON_INDEX:-https://pypi.org/simple/}
-      NONEBOT_COMMAND_START: ${NONEBOT_COMMAND_START:-/}
-    expose:
-      - "8080"
-    volumes:
-      - ${DATA_ROOT:-/opt/nag-data}/nonebot/data:/app/data
-      - ${DATA_ROOT:-/opt/nag-data}/nonebot/plugins:/app/plugins
-      - ${DATA_ROOT:-/opt/nag-data}/nonebot/site-packages:/app/site-packages
-      - ${DATA_ROOT:-/opt/nag-data}/nonebot/cache:/root/.cache/nonebot2
-    depends_on:
-      - gscore
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - import socket; connection = socket.create_connection(("127.0.0.1", 8080), 3); connection.close()
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 30s
-    networks:
-      - nag-net
+  # NoneBot 本体不在这里定义：所有 NoneBot 路线都由 install.sh 用官方 nb-cli
+  # 生成独立项目（DATA_ROOT/nonebot/project），以自己的 Compose 项目运行，并以
+  # 网络别名 nonebot 接入本文件的 nag-net。下方 ws://nonebot:8080 即指向它。
 
   napcat:
     image: ${NAPCAT_IMAGE:-mlikiowa/napcat-docker:latest}
