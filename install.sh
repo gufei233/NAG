@@ -43,6 +43,10 @@ readonly CN_GITHUB_PROXY_PREFIX_DEFAULT="https://ghfast.top/"
 # manifest 却拉不动 blob；此时可用 NAG_DOCKER_REGISTRY_PREFIX 直接改写镜像名
 # 前缀（例如 docker.m.daocloud.io），走同一镜像源但绕开回源鉴权。
 readonly CN_DOCKER_REGISTRY_MIRRORS_DEFAULT="https://docker.m.daocloud.io,https://docker.1ms.run"
+# GHCR 加速。daemon.json 的 registry-mirrors 只代理 Docker Hub，对 ghcr.io 完全
+# 无效，所以 BotShepherd 与 uv 基础镜像在大陆网络下必须靠改写镜像名前缀提速。
+# 选南京大学开源镜像站：实测支持任意仓库（含个人仓库），且明显快于其他候选。
+readonly CN_GHCR_REGISTRY_PREFIX_DEFAULT="ghcr.nju.edu.cn"
 readonly DATA_ROOT_MARKER_NAME=".nag-managed-data-root"
 readonly DATA_ROOT_MARKER_VALUE="NAG_DATA_ROOT_V1"
 readonly INSTALL_LOCK_DIR="${STATE_DIR}/install.lock"
@@ -273,6 +277,7 @@ NAG_PLAYWRIGHT_DOWNLOAD_HOST、NAG_DEBIAN_MIRROR、NAG_GITHUB_PROXY_PREFIX 覆�
 除 NAG_PYTHON_INDEX 外，显式设为空字符串可分别禁用对应镜像。
 若 daemon.json 的 registry-mirrors 只能取到 manifest 却拉不动镜像层，可设置
 NAG_DOCKER_REGISTRY_PREFIX=docker.m.daocloud.io 直接改写 Docker Hub 镜像名前缀。
+GHCR 镜像可用 NAG_GHCR_REGISTRY_PREFIX 改写（大陆网络默认 ghcr.nju.edu.cn）。
 拉取与构建失败会自动退避重试，次数可用 NAG_PULL_RETRIES 调整（默认 3）。
 仅发布在 GHCR 的镜像可用 BOTSHEPHERD_IMAGE、MIMO_AGENT_UV_BASE_IMAGE 覆盖。
 需要 bash 4.4+、Docker Compose 2.24+。
@@ -942,6 +947,28 @@ docker_hub_image() {
   printf '%s/%s' "${prefix%/}" "$image"
 }
 
+ghcr_registry_prefix() {
+  if [[ "${NAG_GHCR_REGISTRY_PREFIX+x}" == x ]]; then
+    printf '%s' "$NAG_GHCR_REGISTRY_PREFIX"
+  elif cn_enabled; then
+    printf '%s' "$CN_GHCR_REGISTRY_PREFIX_DEFAULT"
+  fi
+}
+
+# 把 ghcr.io/owner/repo:tag 换成 <镜像站>/owner/repo:tag。
+# 显式设为空字符串即可强制回官方源；已改写过的镜像名不再二次改写。
+ghcr_image() {
+  local image="$1"
+  local prefix
+
+  prefix="$(ghcr_registry_prefix)"
+  if [[ -z "$prefix" || "$image" != ghcr.io/* ]]; then
+    printf '%s' "$image"
+    return 0
+  fi
+  printf '%s/%s' "${prefix%/}" "${image#ghcr.io/}"
+}
+
 # NapCat 必须停留在 v4.18.5：v4.18.6+ 的官方插件白名单会屏蔽 GScore 适配器。
 # 仓库名与 tag 锁死，但允许 registry 主机名前缀，以便大陆网络改用镜像加速。
 # 前缀只放行主机名字符（含 : 以支持 registry.example.com:5000 这类带端口的
@@ -1163,7 +1190,8 @@ prepare_official_nonebot_instance() {
   as_root_uv \
     MIMO_CONSOLE_COMMIT="$NAG_MIMO_CONSOLE_COMMIT" \
     MIMO_CONSOLE_GIT_URL="$(github_download_url "$NAG_MIMO_CONSOLE_GIT_URL")" \
-    MIMO_AGENT_UV_BASE_IMAGE="${MIMO_AGENT_UV_BASE_IMAGE:-}" \
+    MIMO_AGENT_UV_BASE_IMAGE="$(ghcr_image "${MIMO_AGENT_UV_BASE_IMAGE:-ghcr.io/astral-sh/uv:0.9.29-python3.12-bookworm-slim}")" \
+    NAG_DEBIAN_MIRROR="$(debian_mirror)" \
     bash "${SCRIPT_DIR}/scripts/register-mimo-agent-instance.sh" \
     --instance-id "$kind" \
     --project-dir "$project_dir" \
@@ -1557,7 +1585,7 @@ preflight_environment() {
   ensure_docker_daemon
   ensure_compose_plugin
   if cn_enabled; then
-    log "大陆下载加速已启用：PyPI/uv Python、Debian/Ubuntu、Playwright、GitHub 与 Docker"
+    log "大陆下载加速已启用：PyPI/uv Python、Debian/Ubuntu、Playwright、GitHub、Docker 与 GHCR"
     configure_registry_mirror
   fi
   check_resources
@@ -3466,6 +3494,8 @@ EOF
   napcat_image="$(docker_hub_image "${NAPCAT_COMPAT_REPOSITORY}:latest")"
   local astrbot_image
   astrbot_image="$(docker_hub_image soulter/astrbot:latest)"
+  local botshepherd_image
+  botshepherd_image="$(ghcr_image "$BOTSHEPHERD_IMAGE_DEFAULT")"
 
   napcat_port="$(env_value NAPCAT_WEBUI_PORT "$existing_env_file" || true)"
   napcat_port="${napcat_port:-6099}"
@@ -3916,7 +3946,7 @@ NAPCAT_MASTER_QQ=$personal_masters
 NAPCAT_IMAGE=$napcat_image
 GSCORE_IMAGE=docker.cnb.cool/gscore-mirror/gsuid_core:latest
 ASTRBOT_IMAGE=$astrbot_image
-BOTSHEPHERD_IMAGE=$BOTSHEPHERD_IMAGE_DEFAULT
+BOTSHEPHERD_IMAGE=$botshepherd_image
 GSCORE_QQOFFICIAL_IMAGE=nag-gscore-qqofficial:0.7.0-2d582f6
 GSCORE_QQOFFICIAL_BUILD_CONTEXT=$(github_download_url "https://github.com/An-Sun110/gscore-qqofficial.git")#$GSCORE_QQOFFICIAL_COMMIT
 GSCORE_WS_TOKEN=$gscore_ws_token
@@ -5393,6 +5423,7 @@ else
 fi
 # 在写入 heredoc 之前解析，避免把命令替换留在 env 模板里（失败时会静默写入空值）
 ASTRBOT_IMAGE="$(docker_hub_image soulter/astrbot:latest)"
+BOTSHEPHERD_IMAGE_RESOLVED="$(ghcr_image "$BOTSHEPHERD_IMAGE_DEFAULT")"
 
 print_summary() {
   cat <<EOF
@@ -5494,7 +5525,7 @@ NAPCAT_ACCOUNT=$NAPCAT_ACCOUNT
 NAPCAT_MASTER_QQ=$NAPCAT_MASTER_QQ
 GSCORE_IMAGE=docker.cnb.cool/gscore-mirror/gsuid_core:latest
 ASTRBOT_IMAGE=$ASTRBOT_IMAGE
-BOTSHEPHERD_IMAGE=$BOTSHEPHERD_IMAGE_DEFAULT
+BOTSHEPHERD_IMAGE=$BOTSHEPHERD_IMAGE_RESOLVED
 NAPCAT_IMAGE=$NAPCAT_IMAGE
 ENABLE_NONEBOT_GSCORE_ADAPTER=$([[ "$ADAPTER_KIND" == "nonebot" ]] && printf true || printf false)
 BOTSHEPHERD_ENABLED=$USE_BOTSHEPHERD

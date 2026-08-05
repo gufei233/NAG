@@ -5,6 +5,13 @@ MIMO_CONSOLE_COMMIT="${MIMO_CONSOLE_COMMIT:-acd83708b875245ba26617ed6cd7c622b59d
 MIMO_CONSOLE_GIT_URL="${MIMO_CONSOLE_GIT_URL:-https://github.com/gufei233/nonebot-plugin-mimo-console.git}"
 MIMO_AGENT_UV_BASE_IMAGE="${MIMO_AGENT_UV_BASE_IMAGE:-ghcr.io/astral-sh/uv:0.9.29-python3.12-bookworm-slim}"
 MIMO_AGENT_UV_GIT_IMAGE="${MIMO_AGENT_UV_GIT_IMAGE:-local/mimo-agent-uv-git:0.9.29-1}"
+# Agent 的 pyproject 要求 >=3.10；Debian 11 之类的老发行版只带 3.9，写死
+# /usr/bin/python3 会让 uv sync 直接判不兼容。留空则在下面用 uv 解析出
+# 满足条件的解释器真实路径（必要时由 uv 下载 standalone 版本）。
+MIMO_AGENT_PYTHON="${MIMO_AGENT_PYTHON:-}"
+MIMO_AGENT_PYTHON_REQUEST="${MIMO_AGENT_PYTHON_REQUEST:-3.12}"
+# 容器内 apt 走官方源在大陆网络只有几十 kB/s，由 install.sh 传入镜像站。
+NAG_DEBIAN_MIRROR="${NAG_DEBIAN_MIRROR:-}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 usage() {
@@ -101,11 +108,6 @@ command -v docker >/dev/null 2>&1 || {
 }
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || {
   printf '%s is required\n' "$PYTHON_BIN" >&2
-  exit 69
-}
-agent_python="$(command -v "$PYTHON_BIN")"
-[[ -x "$agent_python" ]] || {
-  printf 'Python interpreter is not executable: %s\n' "$agent_python" >&2
   exit 69
 }
 [[ "$MIMO_CONSOLE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
@@ -214,19 +216,78 @@ git -C "$source_root" fetch --quiet --depth 1 origin "$MIMO_CONSOLE_COMMIT"
 git -C "$source_root" checkout --quiet --detach FETCH_HEAD
 
 if ! docker image inspect "$MIMO_AGENT_UV_GIT_IMAGE" >/dev/null 2>&1; then
+  dockerfile="${source_root}/agent/docker/uv-git.Dockerfile"
+  # 上游 Dockerfile 没有换源开关，容器内 apt 会直连 deb.debian.org；大陆网络下
+  # 实测只有几十 kB/s（18MB 装了 7 分钟）。这里另写一份带换源的 Dockerfile，
+  # 既拿到镜像站速度，又不必改上游仓库。
+  if [[ -n "$NAG_DEBIAN_MIRROR" ]]; then
+    # 与 patch-nonebot-dockerfile.py 保持同一约定：这里收的是主机名而非 URL。
+    [[ "$NAG_DEBIAN_MIRROR" != *://* ]] || {
+      printf 'NAG_DEBIAN_MIRROR must be a bare host, not a URL: %s\n' \
+        "$NAG_DEBIAN_MIRROR" >&2
+      exit 64
+    }
+    # 换源串会进 Dockerfile 的 sed 表达式，只放行主机名字符。
+    [[ "$NAG_DEBIAN_MIRROR" != *[!A-Za-z0-9.:/-]* ]] || {
+      printf '%s\n' "NAG_DEBIAN_MIRROR contains unsafe characters" >&2
+      exit 64
+    }
+    dockerfile="${source_root}/agent/docker/uv-git.nag.Dockerfile"
+    # bookworm 起用 deb822 格式（sources.list.d/*.sources），旧版仍是
+    # sources.list；两处都换才对得上不同 base 镜像。
+    cat >"$dockerfile" <<DOCKERFILE
+ARG UV_IMAGE=${MIMO_AGENT_UV_BASE_IMAGE}
+FROM \${UV_IMAGE}
+
+RUN find /etc/apt -type f \\( -name '*.list' -o -name '*.sources' \\) \\
+      -exec sed -i \\
+        -e "s|deb.debian.org|${NAG_DEBIAN_MIRROR}|g" \\
+        -e "s|security.debian.org|${NAG_DEBIAN_MIRROR}|g" {} + \\
+    && apt-get update \\
+    && apt-get install --no-install-recommends --yes ca-certificates git \\
+    && rm -rf /var/lib/apt/lists/*
+DOCKERFILE
+    printf 'Using Debian mirror %s for the uv-git image\n' "$NAG_DEBIAN_MIRROR"
+  fi
   docker build \
     --build-arg "UV_IMAGE=${MIMO_AGENT_UV_BASE_IMAGE}" \
-    --file "${source_root}/agent/docker/uv-git.Dockerfile" \
+    --file "$dockerfile" \
     --tag "$MIMO_AGENT_UV_GIT_IMAGE" \
     "${source_root}/agent"
 fi
 
 action="install"
 [[ ! -f /etc/systemd/system/mimo-console-agent.service ]] || action="upgrade"
+# manage-service.sh 会对 --python 做 [ -x ] 校验，所以只能给真实路径，不能给
+# "3.12" 这类版本请求。Agent 要求 >=3.10，而 Debian 11 之类的老发行版只带 3.9，
+# 写死 /usr/bin/python3 会让 uv sync 判不兼容；这里先让 uv 解析出满足条件的
+# 解释器（本机没有就下载 standalone 版），再把真实路径传下去。
+if [[ -z "$MIMO_AGENT_PYTHON" ]]; then
+  if ! MIMO_AGENT_PYTHON="$(
+    uv python find "$MIMO_AGENT_PYTHON_REQUEST" 2>/dev/null
+  )"; then
+    uv python install "$MIMO_AGENT_PYTHON_REQUEST" >&2 || {
+      printf 'Failed to provision Python %s for the Agent\n' \
+        "$MIMO_AGENT_PYTHON_REQUEST" >&2
+      exit 69
+    }
+    MIMO_AGENT_PYTHON="$(uv python find "$MIMO_AGENT_PYTHON_REQUEST")" || {
+      printf 'Failed to locate Python %s after install\n' \
+        "$MIMO_AGENT_PYTHON_REQUEST" >&2
+      exit 69
+    }
+  fi
+fi
+[[ -x "$MIMO_AGENT_PYTHON" ]] || {
+  printf 'Agent Python interpreter is not executable: %s\n' \
+    "$MIMO_AGENT_PYTHON" >&2
+  exit 69
+}
+printf 'Using %s for the Mimo Agent runtime\n' "$MIMO_AGENT_PYTHON"
 "${source_root}/agent/scripts/manage-service.sh" "$action" \
   --source "${source_root}/agent" \
   --config "$config_file" \
-  --python "$agent_python"
+  --python "$MIMO_AGENT_PYTHON"
 
 printf 'MIMO_AGENT_INSTANCE=%s\n' "$instance_id"
 printf 'MIMO_AGENT_CONFIG=%s\n' "$config_file"
