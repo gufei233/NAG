@@ -42,6 +42,8 @@ assert_project() {
   assert_contains 'ARG PIP_INDEX_URL' "${project}/Dockerfile.nag"
   assert_contains 'ARG PLAYWRIGHT_DOWNLOAD_HOST' "${project}/Dockerfile.nag"
   assert_contains 'ARG NAG_DEBIAN_MIRROR' "${project}/Dockerfile.nag"
+  assert_contains 'FROM test.invalid/python:3.12' "${project}/Dockerfile.nag"
+  assert_contains 'FROM test.invalid/python:3.12-slim' "${project}/Dockerfile.nag"
   assert_contains '--find-links=/wheel /wheel/*.whl' \
     "${project}/Dockerfile.nag"
   if grep -Fq "RUN python - <<'PY'" "${project}/Dockerfile.nag"; then
@@ -114,7 +116,9 @@ QQ_BOTS=[]
 EOF
   fi
 
-  bash "${repo_root}/scripts/prepare-nonebot-official-project.sh" \
+  NAG_NONEBOT_REQUIREMENTS_IMAGE=test.invalid/python:3.12 \
+  NAG_NONEBOT_RUNTIME_IMAGE=test.invalid/python:3.12-slim \
+    bash "${repo_root}/scripts/prepare-nonebot-official-project.sh" \
     --kind "$kind" \
     --with-gs "$with_gs" \
     --project-dir "$project" \

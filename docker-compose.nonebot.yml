@@ -53,7 +53,7 @@ services:
       - nag-net
 
   nonebot-onebot-init:
-    image: python:3.12-slim
+    image: ${PYTHON_SLIM_IMAGE:-python:3.12-slim}
     container_name: nag-nonebot-onebot-init
     profiles:
       - init
@@ -182,7 +182,7 @@ services:
       - nag-net
 
   napcat-gscore-adapter-disable:
-    image: alpine:latest
+    image: ${ALPINE_IMAGE:-alpine:latest}
     container_name: nag-napcat-gscore-adapter-disable
     profiles:
       - init
@@ -255,7 +255,7 @@ services:
       - nag-net
 
   gscore-plugin-init:
-    image: alpine/git:latest
+    image: ${ALPINE_GIT_IMAGE:-alpine/git:latest}
     container_name: nag-gscore-plugin-init
     profiles:
       - init

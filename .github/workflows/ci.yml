@@ -23,7 +23,9 @@ jobs:
           done
 
       - name: Python syntax
-        run: python3 -m py_compile scripts/*.py tests/*.py
+        run: |
+          python3 -m py_compile scripts/*.py tests/*.py
+          python3 tests/test-patch-nonebot-dockerfile.py
 
       - name: YAML syntax
         run: |

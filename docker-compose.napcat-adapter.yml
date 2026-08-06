@@ -1,13 +1,13 @@
 services:
   napcat:
     # The direct GScore adapter is blocked by the plugin whitelist in v4.18.6+.
-    # Keep this hard-coded so an environment override cannot upgrade it by accident.
-    image: mlikiowa/napcat-docker:v4.18.5
+    # install.sh validates the resolved image and rejects any tag newer than v4.18.5.
+    image: ${NAPCAT_IMAGE:-mlikiowa/napcat-docker:v4.18.5}
     volumes:
       - ${DATA_ROOT:-/opt/nag-data}/napcat/plugins:/app/napcat/plugins
 
   napcat-gscore-adapter-init:
-    image: alpine:latest
+    image: ${ALPINE_IMAGE:-alpine:latest}
     container_name: nag-napcat-gscore-adapter-init
     profiles:
       - init

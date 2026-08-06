@@ -9,6 +9,10 @@ MIMO_CONSOLE_ARCHIVE_URL="${MIMO_CONSOLE_ARCHIVE_URL:-https://github.com/${MIMO_
 NONEBOT_PYTHON_INDEX="${NONEBOT_PYTHON_INDEX:-https://pypi.org/simple/}"
 PLAYWRIGHT_DOWNLOAD_HOST="${PLAYWRIGHT_DOWNLOAD_HOST:-}"
 NAG_DEBIAN_MIRROR="${NAG_DEBIAN_MIRROR:-}"
+# 留空则保留 nb-cli 生成的 FROM python:...（Docker Hub）。大陆网络下由
+# install.sh 传入镜像站上的同名副本。
+NAG_NONEBOT_REQUIREMENTS_IMAGE="${NAG_NONEBOT_REQUIREMENTS_IMAGE:-}"
+NAG_NONEBOT_RUNTIME_IMAGE="${NAG_NONEBOT_RUNTIME_IMAGE:-}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 usage() {
@@ -292,7 +296,9 @@ EOF
 fi
 
 "$PYTHON_BIN" "$script_dir/patch-nonebot-dockerfile.py" \
-  "${project_dir}/Dockerfile" "${project_dir}/Dockerfile.nag"
+  "${project_dir}/Dockerfile" "${project_dir}/Dockerfile.nag" \
+  --requirements-image "$NAG_NONEBOT_REQUIREMENTS_IMAGE" \
+  --runtime-image "$NAG_NONEBOT_RUNTIME_IMAGE"
 
 cat >"${project_dir}/docker-compose.nag.yml" <<EOF
 services:

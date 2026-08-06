@@ -791,14 +791,17 @@ WS_TOKEN 是否一致
 GSCORE_IMAGE=docker.cnb.cool/gscore-mirror/gsuid_core:latest
 ```
 
-AstrBot 和 NapCat 默认使用上游镜像：
+AstrBot 和 NapCat 默认使用 CNB 国内同步镜像：
 
 ```env
-ASTRBOT_IMAGE=soulter/astrbot:latest
-NAPCAT_IMAGE=mlikiowa/napcat-docker:latest
+ASTRBOT_IMAGE=docker.cnb.cool/nag-mirror/docker-sync/soulter-astrbot:latest_amd64
+NAPCAT_IMAGE=docker.cnb.cool/nag-mirror/docker-sync/mlikiowa-napcat-docker:latest_amd64
 ```
 
-国内拉取 AstrBot 镜像较慢时，可以在 `.env` 中改用镜像：
+以上示例适用于 x86_64；`install.sh` 会根据宿主机架构自动选择 `_amd64` 或
+`_arm64`。手动部署 ARM64 时，将标签后缀改为 `_arm64`。
+
+如果 CNB 镜像不可用，可以在 `.env` 中临时改用其他镜像站：
 
 ```env
 ASTRBOT_IMAGE=m.daocloud.io/docker.io/soulter/astrbot:latest

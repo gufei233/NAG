@@ -51,7 +51,7 @@ services:
       - ng-net
 
   napcat-gscore-adapter-init:
-    image: alpine:latest
+    image: ${ALPINE_IMAGE:-alpine:latest}
     container_name: ng-napcat-gscore-adapter-init
     profiles:
       - init
@@ -219,7 +219,7 @@ services:
       - ng-net
 
   gscore-plugin-init:
-    image: alpine/git:latest
+    image: ${ALPINE_GIT_IMAGE:-alpine/git:latest}
     container_name: ng-gscore-plugin-init
     profiles:
       - init

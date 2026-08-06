@@ -70,7 +70,7 @@ services:
       - nag-net
 
   astrbot-plugin-init:
-    image: alpine/git:latest
+    image: ${ALPINE_GIT_IMAGE:-alpine/git:latest}
     container_name: nag-astrbot-plugin-init
     profiles:
       - init
@@ -313,7 +313,7 @@ services:
       - nag-net
 
   gscore-plugin-init:
-    image: alpine/git:latest
+    image: ${ALPINE_GIT_IMAGE:-alpine/git:latest}
     container_name: nag-gscore-plugin-init
     profiles:
       - init

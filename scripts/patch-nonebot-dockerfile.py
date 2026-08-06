@@ -16,7 +16,12 @@ WHEEL_BUILD_MARKER = (
 )
 
 
-def patch(source: Path, target: Path) -> None:
+def patch(
+    source: Path,
+    target: Path,
+    requirements_image: str = "",
+    runtime_image: str = "",
+) -> None:
     text = source.read_text(encoding="utf-8")
     lines = text.splitlines()
 
@@ -39,6 +44,18 @@ def patch(source: Path, target: Path) -> None:
         raise ValueError(
             "Unsupported nb-cli-plugin-docker Dockerfile: wheel build marker missing"
         ) from exc
+
+    if requirements_image or runtime_image:
+        replacements = {
+            from_indexes[0]: requirements_image,
+            from_indexes[1]: runtime_image,
+        }
+        for index, image in replacements.items():
+            if not image:
+                continue
+            suffix = lines[index][len("FROM ") :].split(" ", 1)
+            stage = f" {suffix[1]}" if len(suffix) > 1 else ""
+            lines[index] = f"FROM {image}{stage}"
 
     requirements_packages = [
         "ARG PIP_INDEX_URL",
@@ -112,8 +129,23 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("source", type=Path)
     parser.add_argument("target", type=Path)
+    parser.add_argument(
+        "--requirements-image",
+        default="",
+        help="replace the wheel-building stage base image (default: keep upstream)",
+    )
+    parser.add_argument(
+        "--runtime-image",
+        default="",
+        help="replace the runtime stage base image (default: keep upstream)",
+    )
     args = parser.parse_args()
-    patch(args.source.resolve(), args.target.resolve())
+    patch(
+        args.source.resolve(),
+        args.target.resolve(),
+        args.requirements_image,
+        args.runtime_image,
+    )
 
 
 if __name__ == "__main__":

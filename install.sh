@@ -28,7 +28,6 @@ readonly PULL_RETRY_ATTEMPTS="${NAG_PULL_RETRIES:-3}"
 readonly NAPCAT_ADAPTER_LEGACY_LATEST_URL="https://github.com/xiowo/napcat-plugin-gscore-adapter/releases/latest/download/napcat-plugin-gscore-adapter.zip"
 readonly NAPCAT_ADAPTER_PINNED_URL="https://github.com/xiowo/napcat-plugin-gscore-adapter/releases/download/v1.3.3/napcat-plugin-gscore-adapter.zip"
 readonly NAPCAT_ADAPTER_PINNED_SHA256="1776762d0ed8d16ddb8228b98f599c5fa9d166c4a34df5bb0c8f1e2ddd2387ef"
-readonly BOTSHEPHERD_IMAGE_DEFAULT="${BOTSHEPHERD_IMAGE:-ghcr.io/gufei233/botshepherd:v1.2.1-docker.1}"
 readonly GSCORE_QQOFFICIAL_COMMIT="2d582f6478a0c0d94aa31d7151c0acabce65ea21"
 readonly NAG_MIMO_CONSOLE_COMMIT="${MIMO_CONSOLE_COMMIT:-acd83708b875245ba26617ed6cd7c622b59d1949}"
 readonly NAG_MIMO_CONSOLE_REPOSITORY="${MIMO_CONSOLE_REPOSITORY:-gufei233/nonebot-plugin-mimo-console}"
@@ -57,9 +56,78 @@ readonly CN_NAPCAT_IMAGE_DEFAULT="docker.cnb.cool/nag-mirror/docker-sync/mlikiow
 # latest 是同步当时的快照，不会自动跟随上游；需要跟进时在 CNB 重新同步一次。
 readonly CN_NAPCAT_LATEST_IMAGE_DEFAULT="docker.cnb.cool/nag-mirror/docker-sync/mlikiowa-napcat-docker:latest_amd64"
 readonly CN_ASTRBOT_IMAGE_DEFAULT="docker.cnb.cool/nag-mirror/docker-sync/soulter-astrbot:latest_amd64"
+readonly CN_BOTSHEPHERD_IMAGE_DEFAULT="docker.cnb.cool/nag-mirror/docker-sync/gufei233-botshepherd:v1.2.1-docker.1_amd64"
+readonly CN_UV_IMAGE_DEFAULT="docker.cnb.cool/nag-mirror/docker-sync/astral-sh-uv:0.9.29-python3.12-bookworm-slim_amd64"
+readonly CN_PYTHON_IMAGE_DEFAULT="docker.cnb.cool/nag-mirror/docker-sync/python:3.12_amd64"
+readonly CN_PYTHON_SLIM_IMAGE_DEFAULT="docker.cnb.cool/nag-mirror/docker-sync/python:3.12-slim_amd64"
+readonly CN_ALPINE_IMAGE_DEFAULT="docker.cnb.cool/nag-mirror/docker-sync/alpine:latest_amd64"
+readonly CN_ALPINE_GIT_IMAGE_DEFAULT="docker.cnb.cool/nag-mirror/docker-sync/alpine-git:latest_amd64"
 readonly DATA_ROOT_MARKER_NAME=".nag-managed-data-root"
 readonly DATA_ROOT_MARKER_VALUE="NAG_DATA_ROOT_V1"
 readonly INSTALL_LOCK_DIR="${STATE_DIR}/install.lock"
+
+host_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64) printf 'amd64' ;;
+    aarch64|arm64) printf 'arm64' ;;
+    *) printf '%s' "$(uname -m)" ;;
+  esac
+}
+
+cn_image_for_arch() {
+  local image="$1"
+  local arch
+  arch="$(host_arch)"
+  printf '%s' "${image/_amd64/_${arch}}"
+}
+
+cn_python_image() {
+  if [[ "$1" == "slim" ]]; then
+    cn_image_for_arch "$CN_PYTHON_SLIM_IMAGE_DEFAULT"
+  else
+    cn_image_for_arch "$CN_PYTHON_IMAGE_DEFAULT"
+  fi
+}
+
+cn_alpine_image() {
+  if [[ "$1" == "git" ]]; then
+    cn_image_for_arch "$CN_ALPINE_GIT_IMAGE_DEFAULT"
+  else
+    cn_image_for_arch "$CN_ALPINE_IMAGE_DEFAULT"
+  fi
+}
+
+resolve_python_slim_image() {
+  if [[ -n "${PYTHON_SLIM_IMAGE:-}" ]]; then
+    printf '%s' "$PYTHON_SLIM_IMAGE"
+  elif [[ "${PYTHON_SLIM_IMAGE+x}" != x ]] && cn_enabled; then
+    cn_python_image slim
+  else
+    printf 'python:3.12-slim'
+  fi
+}
+
+resolve_alpine_image() {
+  local image_kind="$1"
+  if [[ "$image_kind" == "git" ]]; then
+    if [[ "${ALPINE_GIT_IMAGE+x}" == x ]]; then
+      printf '%s' "${ALPINE_GIT_IMAGE:-alpine/git:latest}"
+      return 0
+    fi
+  else
+    if [[ "${ALPINE_IMAGE+x}" == x ]]; then
+      printf '%s' "${ALPINE_IMAGE:-alpine:latest}"
+      return 0
+    fi
+  fi
+  if cn_enabled; then
+    cn_alpine_image "$image_kind"
+  elif [[ "$image_kind" == "git" ]]; then
+    printf 'alpine/git:latest'
+  else
+    printf 'alpine:latest'
+  fi
+}
 
 MODE=""
 ASSUME_YES=0
@@ -287,7 +355,8 @@ NAG_PLAYWRIGHT_DOWNLOAD_HOST、NAG_DEBIAN_MIRROR、NAG_GITHUB_PROXY_PREFIX 覆�
 除 NAG_PYTHON_INDEX 外，显式设为空字符串可分别禁用对应镜像。
 若 daemon.json 的 registry-mirrors 只能取到 manifest 却拉不动镜像层，可设置
 NAG_DOCKER_REGISTRY_PREFIX=dockerproxy.net 直接改写 Docker Hub 镜像名前缀。
-GHCR 镜像可用 NAG_GHCR_REGISTRY_PREFIX 改写（大陆网络默认 ghcr.nju.edu.cn）。
+已同步的 GHCR 镜像在大陆网络默认使用 CNB；设置 NAG_GHCR_REGISTRY_PREFIX 可
+强制改写为指定 GHCR 镜像站，设置为空字符串则回官方 GHCR。
 NapCat 与 AstrBot 只发布在 Docker Hub，大陆网络默认改用 CNB 同步副本，可用
 NAG_NAPCAT_IMAGE、NAG_ASTRBOT_IMAGE 覆盖（设为空字符串则回 Docker Hub）。
 拉取与构建失败会自动退避重试，次数可用 NAG_PULL_RETRIES 调整（默认 3）。
@@ -981,11 +1050,11 @@ resolve_napcat_image() {
   if [[ "${NAG_NAPCAT_IMAGE+x}" != x ]] && cn_enabled; then
     case "$tag" in
       "$NAPCAT_COMPAT_TAG")
-        printf '%s' "$CN_NAPCAT_IMAGE_DEFAULT"
+        cn_image_for_arch "$CN_NAPCAT_IMAGE_DEFAULT"
         return 0
         ;;
       latest)
-        printf '%s' "$CN_NAPCAT_LATEST_IMAGE_DEFAULT"
+        cn_image_for_arch "$CN_NAPCAT_LATEST_IMAGE_DEFAULT"
         return 0
         ;;
     esac
@@ -997,9 +1066,50 @@ resolve_astrbot_image() {
   if [[ -n "${NAG_ASTRBOT_IMAGE:-}" ]]; then
     printf '%s' "$NAG_ASTRBOT_IMAGE"
   elif [[ "${NAG_ASTRBOT_IMAGE+x}" != x ]] && cn_enabled; then
-    printf '%s' "$CN_ASTRBOT_IMAGE_DEFAULT"
+    cn_image_for_arch "$CN_ASTRBOT_IMAGE_DEFAULT"
   else
     docker_hub_image soulter/astrbot:latest
+  fi
+}
+
+resolve_botshepherd_image() {
+  local upstream="ghcr.io/gufei233/botshepherd:v1.2.1-docker.1"
+  if [[ "${BOTSHEPHERD_IMAGE+x}" == x ]]; then
+    printf '%s' "${BOTSHEPHERD_IMAGE:-$upstream}"
+  elif [[ "${NAG_GHCR_REGISTRY_PREFIX+x}" == x ]]; then
+    ghcr_image "$upstream"
+  elif cn_enabled; then
+    printf '%s' "$CN_BOTSHEPHERD_IMAGE_DEFAULT"
+  else
+    printf '%s' "$upstream"
+  fi
+}
+
+resolve_uv_image() {
+  local upstream="ghcr.io/astral-sh/uv:0.9.29-python3.12-bookworm-slim"
+  if [[ "${MIMO_AGENT_UV_BASE_IMAGE+x}" == x ]]; then
+    printf '%s' "${MIMO_AGENT_UV_BASE_IMAGE:-$upstream}"
+  elif [[ "${NAG_GHCR_REGISTRY_PREFIX+x}" == x ]]; then
+    ghcr_image "$upstream"
+  elif cn_enabled; then
+    cn_image_for_arch "$CN_UV_IMAGE_DEFAULT"
+  else
+    printf '%s' "$upstream"
+  fi
+}
+
+resolve_nonebot_python_image() {
+  local image_kind="$1"
+  if [[ "$image_kind" == "slim" \
+    && "${NAG_NONEBOT_RUNTIME_IMAGE+x}" != x ]] && cn_enabled; then
+    cn_python_image slim
+  elif [[ "$image_kind" == "full" \
+    && "${NAG_NONEBOT_REQUIREMENTS_IMAGE+x}" != x ]] && cn_enabled; then
+    cn_python_image full
+  elif [[ "$image_kind" == "slim" ]]; then
+    printf '%s' "${NAG_NONEBOT_RUNTIME_IMAGE:-python:3.12-slim}"
+  else
+    printf '%s' "${NAG_NONEBOT_REQUIREMENTS_IMAGE:-python:3.12}"
   fi
 }
 
@@ -1028,7 +1138,7 @@ napcat_image_is_pinned() {
   local image="$1"
   local host
 
-  [[ "$image" != "$CN_NAPCAT_IMAGE_DEFAULT" ]] || return 0
+  [[ "$image" != "$(cn_image_for_arch "$CN_NAPCAT_IMAGE_DEFAULT")" ]] || return 0
   [[ "$image" != "$NAPCAT_COMPAT_IMAGE" ]] || return 0
   [[ "$image" == */"$NAPCAT_COMPAT_IMAGE" ]] || return 1
   host="${image%/"$NAPCAT_COMPAT_IMAGE"}"
@@ -1220,6 +1330,8 @@ prepare_official_nonebot_instance() {
     NONEBOT_PYTHON_INDEX="$(python_index)" \
     PLAYWRIGHT_DOWNLOAD_HOST="$(playwright_download_host)" \
     NAG_DEBIAN_MIRROR="$(debian_mirror)" \
+    NAG_NONEBOT_REQUIREMENTS_IMAGE="$(resolve_nonebot_python_image full)" \
+    NAG_NONEBOT_RUNTIME_IMAGE="$(resolve_nonebot_python_image slim)" \
     MIMO_CONSOLE_ARCHIVE_URL="$(
       github_download_url \
         "https://github.com/${NAG_MIMO_CONSOLE_REPOSITORY}/archive/${NAG_MIMO_CONSOLE_COMMIT}.zip"
@@ -1242,7 +1354,7 @@ prepare_official_nonebot_instance() {
   as_root_uv \
     MIMO_CONSOLE_COMMIT="$NAG_MIMO_CONSOLE_COMMIT" \
     MIMO_CONSOLE_GIT_URL="$(github_download_url "$NAG_MIMO_CONSOLE_GIT_URL")" \
-    MIMO_AGENT_UV_BASE_IMAGE="$(ghcr_image "${MIMO_AGENT_UV_BASE_IMAGE:-ghcr.io/astral-sh/uv:0.9.29-python3.12-bookworm-slim}")" \
+    MIMO_AGENT_UV_BASE_IMAGE="$(resolve_uv_image)" \
     NAG_DEBIAN_MIRROR="$(debian_mirror)" \
     bash "${SCRIPT_DIR}/scripts/register-mimo-agent-instance.sh" \
     --instance-id "$kind" \
@@ -3547,7 +3659,7 @@ EOF
   local astrbot_image
   astrbot_image="$(resolve_astrbot_image)"
   local botshepherd_image
-  botshepherd_image="$(ghcr_image "$BOTSHEPHERD_IMAGE_DEFAULT")"
+  botshepherd_image="$(resolve_botshepherd_image)"
 
   napcat_port="$(env_value NAPCAT_WEBUI_PORT "$existing_env_file" || true)"
   napcat_port="${napcat_port:-6099}"
@@ -3999,6 +4111,9 @@ NAPCAT_IMAGE=$napcat_image
 GSCORE_IMAGE=docker.cnb.cool/gscore-mirror/gsuid_core:latest
 ASTRBOT_IMAGE=$astrbot_image
 BOTSHEPHERD_IMAGE=$botshepherd_image
+PYTHON_SLIM_IMAGE=$(resolve_python_slim_image)
+ALPINE_IMAGE=$(resolve_alpine_image plain)
+ALPINE_GIT_IMAGE=$(resolve_alpine_image git)
 GSCORE_QQOFFICIAL_IMAGE=nag-gscore-qqofficial:0.7.0-2d582f6
 GSCORE_QQOFFICIAL_BUILD_CONTEXT=$(github_download_url "https://github.com/An-Sun110/gscore-qqofficial.git")#$GSCORE_QQOFFICIAL_COMMIT
 GSCORE_WS_TOKEN=$gscore_ws_token
@@ -5475,7 +5590,7 @@ else
 fi
 # 在写入 heredoc 之前解析，避免把命令替换留在 env 模板里（失败时会静默写入空值）
 ASTRBOT_IMAGE="$(resolve_astrbot_image)"
-BOTSHEPHERD_IMAGE_RESOLVED="$(ghcr_image "$BOTSHEPHERD_IMAGE_DEFAULT")"
+BOTSHEPHERD_IMAGE_RESOLVED="$(resolve_botshepherd_image)"
 
 print_summary() {
   cat <<EOF
@@ -5579,6 +5694,9 @@ GSCORE_IMAGE=docker.cnb.cool/gscore-mirror/gsuid_core:latest
 ASTRBOT_IMAGE=$ASTRBOT_IMAGE
 BOTSHEPHERD_IMAGE=$BOTSHEPHERD_IMAGE_RESOLVED
 NAPCAT_IMAGE=$NAPCAT_IMAGE
+PYTHON_SLIM_IMAGE=$(resolve_python_slim_image)
+ALPINE_IMAGE=$(resolve_alpine_image plain)
+ALPINE_GIT_IMAGE=$(resolve_alpine_image git)
 ENABLE_NONEBOT_GSCORE_ADAPTER=$([[ "$ADAPTER_KIND" == "nonebot" ]] && printf true || printf false)
 BOTSHEPHERD_ENABLED=$USE_BOTSHEPHERD
 NAPCAT_GSCORE_ADAPTER_ZIP_URL=$(github_download_url "$NAPCAT_ADAPTER_URL")
