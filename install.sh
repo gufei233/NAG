@@ -49,6 +49,12 @@ readonly CN_DOCKER_REGISTRY_MIRRORS_DEFAULT="https://dockerproxy.net,https://doc
 # 无效，所以 BotShepherd 与 uv 基础镜像在大陆网络下必须靠改写镜像名前缀提速。
 # 选南京大学开源镜像站：实测支持任意仓库（含个人仓库），且明显快于其他候选。
 readonly CN_GHCR_REGISTRY_PREFIX_DEFAULT="ghcr.nju.edu.cn"
+# Docker Hub 在大陆网络下实测只有 0.1~2 MiB/s，且 NapCat/AstrBot 都只发布在
+# Docker Hub（GHCR、CNB 上游都没有官方镜像）。CNB 同步副本实测 19.87 MiB/s，
+# 因此大陆模式下改走 CNB。同步源见 cnb.cool/nag-mirror/docker-sync，命名规则为
+# <组织>/docker-sync/<owner>-<repo>:<tag>_<架构>。
+readonly CN_NAPCAT_IMAGE_DEFAULT="docker.cnb.cool/nag-mirror/docker-sync/mlikiowa-napcat-docker:v4.18.5_amd64"
+readonly CN_ASTRBOT_IMAGE_DEFAULT="docker.cnb.cool/nag-mirror/docker-sync/soulter-astrbot:latest_amd64"
 readonly DATA_ROOT_MARKER_NAME=".nag-managed-data-root"
 readonly DATA_ROOT_MARKER_VALUE="NAG_DATA_ROOT_V1"
 readonly INSTALL_LOCK_DIR="${STATE_DIR}/install.lock"
@@ -280,6 +286,8 @@ NAG_PLAYWRIGHT_DOWNLOAD_HOST、NAG_DEBIAN_MIRROR、NAG_GITHUB_PROXY_PREFIX 覆�
 若 daemon.json 的 registry-mirrors 只能取到 manifest 却拉不动镜像层，可设置
 NAG_DOCKER_REGISTRY_PREFIX=dockerproxy.net 直接改写 Docker Hub 镜像名前缀。
 GHCR 镜像可用 NAG_GHCR_REGISTRY_PREFIX 改写（大陆网络默认 ghcr.nju.edu.cn）。
+NapCat 与 AstrBot 只发布在 Docker Hub，大陆网络默认改用 CNB 同步副本，可用
+NAG_NAPCAT_IMAGE、NAG_ASTRBOT_IMAGE 覆盖（设为空字符串则回 Docker Hub）。
 拉取与构建失败会自动退避重试，次数可用 NAG_PULL_RETRIES 调整（默认 3）。
 仅发布在 GHCR 的镜像可用 BOTSHEPHERD_IMAGE、MIMO_AGENT_UV_BASE_IMAGE 覆盖。
 需要 bash 4.4+、Docker Compose 2.24+。
@@ -957,6 +965,34 @@ ghcr_registry_prefix() {
   fi
 }
 
+# NapCat / AstrBot 只发布在 Docker Hub，而 Docker Hub 在大陆网络下没有可用的
+# 加速（各镜像站实测 0~2 MiB/s）。大陆模式改用 CNB 上的同步副本（实测约
+# 20 MiB/s）；把对应环境变量设为空字符串即可强制回 Docker Hub。
+# 只有 v4.18.5 同步了 CNB 副本，latest 仍走 Docker Hub。
+resolve_napcat_image() {
+  local tag="$1"
+
+  # 与其他镜像开关一致：非空值直接采用，空值表示"别用镜像站，回官方源"。
+  if [[ -n "${NAG_NAPCAT_IMAGE:-}" ]]; then
+    printf '%s' "$NAG_NAPCAT_IMAGE"
+  elif [[ "${NAG_NAPCAT_IMAGE+x}" != x ]] && cn_enabled \
+    && [[ "$tag" == "$NAPCAT_COMPAT_TAG" ]]; then
+    printf '%s' "$CN_NAPCAT_IMAGE_DEFAULT"
+  else
+    docker_hub_image "${NAPCAT_COMPAT_REPOSITORY}:${tag}"
+  fi
+}
+
+resolve_astrbot_image() {
+  if [[ -n "${NAG_ASTRBOT_IMAGE:-}" ]]; then
+    printf '%s' "$NAG_ASTRBOT_IMAGE"
+  elif [[ "${NAG_ASTRBOT_IMAGE+x}" != x ]] && cn_enabled; then
+    printf '%s' "$CN_ASTRBOT_IMAGE_DEFAULT"
+  else
+    docker_hub_image soulter/astrbot:latest
+  fi
+}
+
 # 把 ghcr.io/owner/repo:tag 换成 <镜像站>/owner/repo:tag。
 # 显式设为空字符串即可强制回官方源；已改写过的镜像名不再二次改写。
 ghcr_image() {
@@ -975,10 +1011,14 @@ ghcr_image() {
 # 仓库名与 tag 锁死，但允许 registry 主机名前缀，以便大陆网络改用镜像加速。
 # 前缀只放行主机名字符（含 : 以支持 registry.example.com:5000 这类带端口的
 # 私有仓库）；因此不含 / 的伪装（如 evil.com/x/mlikiowa/...）会被挡下。
+# CNB 同步副本的路径形状不同（owner 与 repo 之间是连字符、tag 带架构后缀），
+# 无法用同一套前缀规则表达，因此按整串精确匹配单独放行——这比放宽正则安全，
+# 校验的意义正是挡住 v4.18.6+，白名单只认这一个确切名字。
 napcat_image_is_pinned() {
   local image="$1"
   local host
 
+  [[ "$image" != "$CN_NAPCAT_IMAGE_DEFAULT" ]] || return 0
   [[ "$image" != "$NAPCAT_COMPAT_IMAGE" ]] || return 0
   [[ "$image" == */"$NAPCAT_COMPAT_IMAGE" ]] || return 1
   host="${image%/"$NAPCAT_COMPAT_IMAGE"}"
@@ -3493,9 +3533,9 @@ EOF
   local qq_api_base
   local gscore_ws_token
   local napcat_image
-  napcat_image="$(docker_hub_image "${NAPCAT_COMPAT_REPOSITORY}:latest")"
+  napcat_image="$(resolve_napcat_image latest)"
   local astrbot_image
-  astrbot_image="$(docker_hub_image soulter/astrbot:latest)"
+  astrbot_image="$(resolve_astrbot_image)"
   local botshepherd_image
   botshepherd_image="$(ghcr_image "$BOTSHEPHERD_IMAGE_DEFAULT")"
 
@@ -3591,7 +3631,7 @@ EOF
       fixed_mac=1
     fi
     if [[ "$personal_adapter" == "napcat" ]]; then
-      napcat_image="$(docker_hub_image "$NAPCAT_COMPAT_IMAGE")"
+      napcat_image="$(resolve_napcat_image "$NAPCAT_COMPAT_TAG")"
     fi
   fi
 
@@ -5419,12 +5459,12 @@ for pair in \
 done
 
 if [[ "$ADAPTER_KIND" == "napcat" ]]; then
-  NAPCAT_IMAGE="$(docker_hub_image "$NAPCAT_COMPAT_IMAGE")"
+  NAPCAT_IMAGE="$(resolve_napcat_image "$NAPCAT_COMPAT_TAG")"
 else
-  NAPCAT_IMAGE="$(docker_hub_image "${NAPCAT_COMPAT_REPOSITORY}:latest")"
+  NAPCAT_IMAGE="$(resolve_napcat_image latest)"
 fi
 # 在写入 heredoc 之前解析，避免把命令替换留在 env 模板里（失败时会静默写入空值）
-ASTRBOT_IMAGE="$(docker_hub_image soulter/astrbot:latest)"
+ASTRBOT_IMAGE="$(resolve_astrbot_image)"
 BOTSHEPHERD_IMAGE_RESOLVED="$(ghcr_image "$BOTSHEPHERD_IMAGE_DEFAULT")"
 
 print_summary() {
