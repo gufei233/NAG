@@ -54,6 +54,8 @@ readonly CN_GHCR_REGISTRY_PREFIX_DEFAULT="ghcr.nju.edu.cn"
 # 因此大陆模式下改走 CNB。同步源见 cnb.cool/nag-mirror/docker-sync，命名规则为
 # <组织>/docker-sync/<owner>-<repo>:<tag>_<架构>。
 readonly CN_NAPCAT_IMAGE_DEFAULT="docker.cnb.cool/nag-mirror/docker-sync/mlikiowa-napcat-docker:v4.18.5_amd64"
+# latest 是同步当时的快照，不会自动跟随上游；需要跟进时在 CNB 重新同步一次。
+readonly CN_NAPCAT_LATEST_IMAGE_DEFAULT="docker.cnb.cool/nag-mirror/docker-sync/mlikiowa-napcat-docker:latest_amd64"
 readonly CN_ASTRBOT_IMAGE_DEFAULT="docker.cnb.cool/nag-mirror/docker-sync/soulter-astrbot:latest_amd64"
 readonly DATA_ROOT_MARKER_NAME=".nag-managed-data-root"
 readonly DATA_ROOT_MARKER_VALUE="NAG_DATA_ROOT_V1"
@@ -968,19 +970,27 @@ ghcr_registry_prefix() {
 # NapCat / AstrBot 只发布在 Docker Hub，而 Docker Hub 在大陆网络下没有可用的
 # 加速（各镜像站实测 0~2 MiB/s）。大陆模式改用 CNB 上的同步副本（实测约
 # 20 MiB/s）；把对应环境变量设为空字符串即可强制回 Docker Hub。
-# 只有 v4.18.5 同步了 CNB 副本，latest 仍走 Docker Hub。
 resolve_napcat_image() {
   local tag="$1"
 
   # 与其他镜像开关一致：非空值直接采用，空值表示"别用镜像站，回官方源"。
   if [[ -n "${NAG_NAPCAT_IMAGE:-}" ]]; then
     printf '%s' "$NAG_NAPCAT_IMAGE"
-  elif [[ "${NAG_NAPCAT_IMAGE+x}" != x ]] && cn_enabled \
-    && [[ "$tag" == "$NAPCAT_COMPAT_TAG" ]]; then
-    printf '%s' "$CN_NAPCAT_IMAGE_DEFAULT"
-  else
-    docker_hub_image "${NAPCAT_COMPAT_REPOSITORY}:${tag}"
+    return 0
   fi
+  if [[ "${NAG_NAPCAT_IMAGE+x}" != x ]] && cn_enabled; then
+    case "$tag" in
+      "$NAPCAT_COMPAT_TAG")
+        printf '%s' "$CN_NAPCAT_IMAGE_DEFAULT"
+        return 0
+        ;;
+      latest)
+        printf '%s' "$CN_NAPCAT_LATEST_IMAGE_DEFAULT"
+        return 0
+        ;;
+    esac
+  fi
+  docker_hub_image "${NAPCAT_COMPAT_REPOSITORY}:${tag}"
 }
 
 resolve_astrbot_image() {
