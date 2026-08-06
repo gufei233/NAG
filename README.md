@@ -558,6 +558,9 @@ NAG 不修改官方生成的两个核心文件，而是额外生成 `Dockerfile.
 - 个人 QQ：`http://127.0.0.1:18081/mimo-console/`
 - QQ 官方机器人：`http://127.0.0.1:18082/mimo-console/`
 
+Mimo Console 默认跟随 `MimoKit/nonebot-plugin-mimo-console` 的 `master`
+分支；重新运行安装器时会解析并安装当时的最新版本。
+
 直接运行 `bash install.sh`，在顶层菜单选择“管理 NoneBot 插件（Mimo Console）”，脚本会列出实际存在的官方 Docker 实例和入口。WebUI 中对插件执行安装、更新或卸载时，受限的宿主机 Agent 会更新该实例自己的 `pyproject.toml` 与 `uv.lock`，构建新镜像，切换容器并做健康检查；失败则恢复旧锁文件和旧镜像。这样不会在运行中的容器里临时 `pip install`，容器重建后依赖也不会丢失。
 
 首次安装且尚未创建管理员时，安装脚本会从当前 NoneBot 容器的本次启动日志中提取 Mimo Console 初始化令牌，并紧跟在对应 WebUI 地址后打印。管理员已经初始化时不会再次显示旧令牌；删除认证数据重新初始化后，重跑安装器可获取本次启动生成的新令牌。

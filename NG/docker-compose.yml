@@ -207,7 +207,12 @@ services:
           exit 1
         fi
         uv pip install --python /venv/bin/python $$GSCORE_XWUID_PYTHON_PACKAGES
-        uv run --python /venv/bin/python playwright install chromium
+        if ! uv run --python /venv/bin/python playwright install chromium; then
+          if [ -z "$$PLAYWRIGHT_DOWNLOAD_HOST" ]; then exit 1; fi
+          echo "Playwright mirror failed; retrying the official download host."
+          unset PLAYWRIGHT_DOWNLOAD_HOST
+          uv run --python /venv/bin/python playwright install chromium
+        fi
     volumes:
       - ${DATA_ROOT:-/opt/ng-data}/gscore/data:/gsuid_core/data
       - ${DATA_ROOT:-/opt/ng-data}/gscore/plugins:/gsuid_core/gsuid_core/plugins

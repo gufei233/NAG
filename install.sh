@@ -29,12 +29,14 @@ readonly NAPCAT_ADAPTER_LEGACY_LATEST_URL="https://github.com/xiowo/napcat-plugi
 readonly NAPCAT_ADAPTER_PINNED_URL="https://github.com/xiowo/napcat-plugin-gscore-adapter/releases/download/v1.3.3/napcat-plugin-gscore-adapter.zip"
 readonly NAPCAT_ADAPTER_PINNED_SHA256="1776762d0ed8d16ddb8228b98f599c5fa9d166c4a34df5bb0c8f1e2ddd2387ef"
 readonly GSCORE_QQOFFICIAL_COMMIT="2d582f6478a0c0d94aa31d7151c0acabce65ea21"
-readonly NAG_MIMO_CONSOLE_COMMIT="${MIMO_CONSOLE_COMMIT:-acd83708b875245ba26617ed6cd7c622b59d1949}"
-readonly NAG_MIMO_CONSOLE_REPOSITORY="${MIMO_CONSOLE_REPOSITORY:-gufei233/nonebot-plugin-mimo-console}"
-readonly NAG_MIMO_CONSOLE_GIT_URL="${MIMO_CONSOLE_GIT_URL:-https://github.com/gufei233/nonebot-plugin-mimo-console.git}"
+readonly NAG_MIMO_CONSOLE_REF="${MIMO_CONSOLE_REF:-master}"
+readonly NAG_MIMO_CONSOLE_REPOSITORY="${MIMO_CONSOLE_REPOSITORY:-MimoKit/nonebot-plugin-mimo-console}"
+readonly NAG_MIMO_CONSOLE_GIT_URL="${MIMO_CONSOLE_GIT_URL:-https://github.com/MimoKit/nonebot-plugin-mimo-console.git}"
 readonly CN_PYTHON_INDEX_DEFAULT="https://pypi.tuna.tsinghua.edu.cn/simple/"
 readonly CN_UV_PYTHON_INSTALL_MIRROR_DEFAULT="https://registry.npmmirror.com/-/binary/python-build-standalone"
-readonly CN_PLAYWRIGHT_DOWNLOAD_HOST_DEFAULT="https://registry.npmmirror.com/-/binary/playwright"
+# npmmirror can lag behind new Playwright Chromium revisions and return 404.
+# New installs use the official host; existing custom mirrors fall back there.
+readonly CN_PLAYWRIGHT_DOWNLOAD_HOST_DEFAULT=""
 readonly CN_DEBIAN_MIRROR_DEFAULT="mirrors.aliyun.com"
 readonly CN_APT_MIRROR_BASE_DEFAULT="https://mirrors.aliyun.com"
 readonly CN_GITHUB_PROXY_PREFIX_DEFAULT="https://ghfast.top/"
@@ -1325,7 +1327,7 @@ prepare_official_nonebot_instance() {
   validate_port MIMO_CONSOLE_PORT "$web_port"
 
   as_root_uv \
-    MIMO_CONSOLE_COMMIT="$NAG_MIMO_CONSOLE_COMMIT" \
+    MIMO_CONSOLE_REF="$NAG_MIMO_CONSOLE_REF" \
     MIMO_CONSOLE_REPOSITORY="$NAG_MIMO_CONSOLE_REPOSITORY" \
     NONEBOT_PYTHON_INDEX="$(python_index)" \
     PLAYWRIGHT_DOWNLOAD_HOST="$(playwright_download_host)" \
@@ -1334,7 +1336,7 @@ prepare_official_nonebot_instance() {
     NAG_NONEBOT_RUNTIME_IMAGE="$(resolve_nonebot_python_image slim)" \
     MIMO_CONSOLE_ARCHIVE_URL="$(
       github_download_url \
-        "https://github.com/${NAG_MIMO_CONSOLE_REPOSITORY}/archive/${NAG_MIMO_CONSOLE_COMMIT}.zip"
+        "https://github.com/${NAG_MIMO_CONSOLE_REPOSITORY}/archive/${NAG_MIMO_CONSOLE_REF}.zip"
     )" \
     bash "${SCRIPT_DIR}/scripts/prepare-nonebot-official-project.sh" \
     --kind "$kind" \
@@ -1352,7 +1354,7 @@ prepare_official_nonebot_instance() {
     --image-repository "$image_repository"
 
   as_root_uv \
-    MIMO_CONSOLE_COMMIT="$NAG_MIMO_CONSOLE_COMMIT" \
+    MIMO_CONSOLE_REF="$NAG_MIMO_CONSOLE_REF" \
     MIMO_CONSOLE_GIT_URL="$(github_download_url "$NAG_MIMO_CONSOLE_GIT_URL")" \
     MIMO_AGENT_UV_BASE_IMAGE="$(resolve_uv_image)" \
     NAG_DEBIAN_MIRROR="$(debian_mirror)" \

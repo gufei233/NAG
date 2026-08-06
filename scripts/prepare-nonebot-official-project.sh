@@ -3,9 +3,9 @@ set -euo pipefail
 
 NB_CLI_VERSION="${NB_CLI_VERSION:-1.7.4}"
 NB_DOCKER_PLUGIN_VERSION="${NB_DOCKER_PLUGIN_VERSION:-0.6.1}"
-MIMO_CONSOLE_COMMIT="${MIMO_CONSOLE_COMMIT:-acd83708b875245ba26617ed6cd7c622b59d1949}"
-MIMO_CONSOLE_REPOSITORY="${MIMO_CONSOLE_REPOSITORY:-gufei233/nonebot-plugin-mimo-console}"
-MIMO_CONSOLE_ARCHIVE_URL="${MIMO_CONSOLE_ARCHIVE_URL:-https://github.com/${MIMO_CONSOLE_REPOSITORY}/archive/${MIMO_CONSOLE_COMMIT}.zip}"
+MIMO_CONSOLE_REF="${MIMO_CONSOLE_REF:-master}"
+MIMO_CONSOLE_REPOSITORY="${MIMO_CONSOLE_REPOSITORY:-MimoKit/nonebot-plugin-mimo-console}"
+MIMO_CONSOLE_ARCHIVE_URL="${MIMO_CONSOLE_ARCHIVE_URL:-https://github.com/${MIMO_CONSOLE_REPOSITORY}/archive/${MIMO_CONSOLE_REF}.zip}"
 NONEBOT_PYTHON_INDEX="${NONEBOT_PYTHON_INDEX:-https://pypi.org/simple/}"
 PLAYWRIGHT_DOWNLOAD_HOST="${PLAYWRIGHT_DOWNLOAD_HOST:-}"
 NAG_DEBIAN_MIRROR="${NAG_DEBIAN_MIRROR:-}"
@@ -121,8 +121,13 @@ command -v "$PYTHON_BIN" >/dev/null 2>&1 || {
   printf '%s is required\n' "$PYTHON_BIN" >&2
   exit 69
 }
-[[ "$MIMO_CONSOLE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
-  printf '%s\n' "MIMO_CONSOLE_COMMIT must be a full lowercase Git commit" >&2
+[[ "$MIMO_CONSOLE_REF" =~ ^[A-Za-z0-9._/-]+$ ]] || {
+  printf '%s\n' "MIMO_CONSOLE_REF contains unsafe characters" >&2
+  exit 64
+}
+[[ "$MIMO_CONSOLE_REF" != *..* && "$MIMO_CONSOLE_REF" != *//* \
+  && "$MIMO_CONSOLE_REF" != */ && "$MIMO_CONSOLE_REF" != *. ]] || {
+  printf '%s\n' "MIMO_CONSOLE_REF is not a valid branch or tag" >&2
   exit 64
 }
 [[ "$MIMO_CONSOLE_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
@@ -240,7 +245,7 @@ fi
 mimo_requirement="$(
   printf 'nonebot-plugin-mimo-console @ %s' "$MIMO_CONSOLE_ARCHIVE_URL"
 )"
-# Reconcile the pinned Docker-capable build on every NAG run. This also upgrades
+# Reconcile the latest Docker-capable build on every NAG run. This also upgrades
 # projects created by an older NAG release instead of silently retaining it.
 uv add --directory "$project_dir" \
   --upgrade-package nonebot-plugin-mimo-console \

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MIMO_CONSOLE_COMMIT="${MIMO_CONSOLE_COMMIT:-acd83708b875245ba26617ed6cd7c622b59d1949}"
-MIMO_CONSOLE_GIT_URL="${MIMO_CONSOLE_GIT_URL:-https://github.com/gufei233/nonebot-plugin-mimo-console.git}"
+MIMO_CONSOLE_REF="${MIMO_CONSOLE_REF:-master}"
+MIMO_CONSOLE_GIT_URL="${MIMO_CONSOLE_GIT_URL:-https://github.com/MimoKit/nonebot-plugin-mimo-console.git}"
 MIMO_AGENT_UV_BASE_IMAGE="${MIMO_AGENT_UV_BASE_IMAGE:-ghcr.io/astral-sh/uv:0.9.29-python3.12-bookworm-slim}"
 MIMO_AGENT_UV_GIT_IMAGE="${MIMO_AGENT_UV_GIT_IMAGE:-local/mimo-agent-uv-git:0.9.29-1}"
 # Agent 的 pyproject 要求 >=3.10；Debian 11 之类的老发行版只带 3.9，写死
@@ -110,8 +110,13 @@ command -v "$PYTHON_BIN" >/dev/null 2>&1 || {
   printf '%s is required\n' "$PYTHON_BIN" >&2
   exit 69
 }
-[[ "$MIMO_CONSOLE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
-  printf '%s\n' "MIMO_CONSOLE_COMMIT must be a full lowercase Git commit" >&2
+[[ "$MIMO_CONSOLE_REF" =~ ^[A-Za-z0-9._/-]+$ ]] || {
+  printf '%s\n' "MIMO_CONSOLE_REF contains unsafe characters" >&2
+  exit 64
+}
+[[ "$MIMO_CONSOLE_REF" != *..* && "$MIMO_CONSOLE_REF" != *//* \
+  && "$MIMO_CONSOLE_REF" != */ && "$MIMO_CONSOLE_REF" != *. ]] || {
+  printf '%s\n' "MIMO_CONSOLE_REF is not a valid branch or tag" >&2
   exit 64
 }
 
@@ -212,7 +217,7 @@ source_root="$(mktemp -d /opt/mimo-console-source.XXXXXX)"
 trap 'rm -rf "$source_root"' EXIT INT TERM
 git -C "$source_root" init --quiet
 git -C "$source_root" remote add origin "$MIMO_CONSOLE_GIT_URL"
-git -C "$source_root" fetch --quiet --depth 1 origin "$MIMO_CONSOLE_COMMIT"
+git -C "$source_root" fetch --quiet --depth 1 origin "$MIMO_CONSOLE_REF"
 git -C "$source_root" checkout --quiet --detach FETCH_HEAD
 
 if ! docker image inspect "$MIMO_AGENT_UV_GIT_IMAGE" >/dev/null 2>&1; then

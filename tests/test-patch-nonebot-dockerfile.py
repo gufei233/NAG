@@ -49,6 +49,15 @@ COPY . /app/
                     "FROM mirror.invalid/python:3.12-slim_amd64",
                 ],
             )
+            patched = target.read_text(encoding="utf-8")
+            self.assertIn(
+                "Playwright mirror failed; retrying the official download host.",
+                patched,
+            )
+            self.assertIn(
+                "env -u PLAYWRIGHT_DOWNLOAD_HOST python -m playwright install",
+                patched,
+            )
 
 
 if __name__ == "__main__":

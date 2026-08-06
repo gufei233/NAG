@@ -104,7 +104,11 @@ def patch(
         "",
         "# NAG extension: install Chromium only when a WebUI-installed plugin needs it.",
         'RUN if python -c "import playwright" >/dev/null 2>&1; then \\',
-        "      python -m playwright install --with-deps chromium; \\",
+        "      if ! python -m playwright install --with-deps chromium; then \\",
+        '        if [ -z "$PLAYWRIGHT_DOWNLOAD_HOST" ]; then exit 1; fi; \\',
+        '        echo "Playwright mirror failed; retrying the official download host."; \\',
+        "        env -u PLAYWRIGHT_DOWNLOAD_HOST python -m playwright install --with-deps chromium; \\",
+        "      fi; \\",
         "    fi",
         "",
     ]
