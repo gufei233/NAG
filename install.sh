@@ -17,6 +17,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 readonly STATE_DIR="${NAG_INSTALL_STATE_DIR:-${SCRIPT_DIR}/.installer}"
 readonly PREFLIGHT_STATE_FILE="${STATE_DIR}/preflight.env"
+readonly PREFLIGHT_STATE_VERSION="2"
 readonly DOCKER_BIN="${NAG_DOCKER_BIN:-docker}"
 readonly NAPCAT_COMPAT_REPOSITORY="mlikiowa/napcat-docker"
 readonly NAPCAT_COMPAT_TAG="v4.18.5"
@@ -892,13 +893,16 @@ probe_cn_network() {
 resolve_cn_mode() {
   local detected=0
   local saved
+  local saved_version
   local default_answer
 
   if [[ -n "$NAG_CN_MODE" ]]; then
     return 0
   fi
   saved="$(env_value NAG_CN "$PREFLIGHT_STATE_FILE" || true)"
-  if [[ "$saved" == "0" || "$saved" == "1" ]]; then
+  saved_version="$(env_value NAG_PREFLIGHT_STATE_VERSION "$PREFLIGHT_STATE_FILE" || true)"
+  if [[ "$saved_version" == "$PREFLIGHT_STATE_VERSION" \
+    && ( "$saved" == "0" || "$saved" == "1" ) ]]; then
     NAG_CN_MODE="$saved"
     return 0
   fi
@@ -923,7 +927,8 @@ resolve_cn_mode() {
     log "按$([[ "$NAG_CN_MODE" == "1" ]] && printf 大陆 || printf 国际)网络环境处理（可用 --cn / --no-cn 覆盖）"
   fi
   mkdir -p "$STATE_DIR"
-  printf '# 由 install.sh 生成的环境预检记录\nNAG_CN=%s\n' "$NAG_CN_MODE" >"$PREFLIGHT_STATE_FILE"
+  printf '# 由 install.sh 生成的环境预检记录\nNAG_PREFLIGHT_STATE_VERSION=%s\nNAG_CN=%s\n' \
+    "$PREFLIGHT_STATE_VERSION" "$NAG_CN_MODE" >"$PREFLIGHT_STATE_FILE"
   chmod 600 "$PREFLIGHT_STATE_FILE"
   return 0
 }
@@ -1764,6 +1769,7 @@ preflight_environment() {
   ensure_compose_plugin
   if cn_enabled; then
     log "大陆下载加速已启用：PyPI/uv Python、Debian/Ubuntu、Playwright、GitHub、Docker 与 GHCR"
+    log "Playwright 国内镜像：$(playwright_npmmirror_base)"
     configure_registry_mirror
   fi
   check_resources
