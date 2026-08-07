@@ -29,6 +29,16 @@ def test_chrome_for_testing_path() -> None:
     )
 
 
+def test_actual_playwright_chrome_for_testing_path() -> None:
+    assert module.mirror_url(
+        "https://registry.npmmirror.com/-/binary",
+        "/145.0.7632.6/linux64/chrome-linux64.zip",
+    ) == (
+        "https://registry.npmmirror.com/-/binary/chrome-for-testing/"
+        "145.0.7632.6/linux64/chrome-linux64.zip"
+    )
+
+
 def test_regular_playwright_path() -> None:
     assert module.mirror_url(
         "https://registry.npmmirror.com/-/binary",

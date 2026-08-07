@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -16,6 +17,8 @@ def mirror_url(mirror_base: str, request_path: str) -> str:
     if path.startswith("/builds/cft/"):
         suffix = path.removeprefix("/builds/cft/")
         return f"{mirror_base.rstrip('/')}/chrome-for-testing/{suffix}"
+    if re.match(r"^/\d+(?:\.\d+){3}/", path):
+        return f"{mirror_base.rstrip('/')}/chrome-for-testing{path}"
     return f"{mirror_base.rstrip('/')}/playwright{path}"
 
 
