@@ -1326,6 +1326,9 @@ MIMO_CONSOLE_DEPLOYMENT_MODE=auto
 MIMO_CONSOLE_INSTANCE_ID=$instance_id
 MIMO_CONSOLE_AGENT_SOCKET=/run/mimo-agent/agent.sock
 MIMO_CONSOLE_AGENT_TOKEN_FILE=/run/secrets/mimo-agent-token
+PIP_INDEX_URL=$(python_index)
+PLAYWRIGHT_DOWNLOAD_HOST=$(playwright_download_host)
+NAG_DEBIAN_MIRROR=$(debian_mirror)
 EOF
   if [[ "$kind" == "official" ]]; then
     cat >>"$temporary" <<EOF

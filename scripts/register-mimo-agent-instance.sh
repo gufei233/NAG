@@ -181,6 +181,11 @@ payload = {
     "image_repository": image_repository,
     "override_file": ".mimo/docker-compose.override.yml",
     "environment_file": ".env.prod",
+    "build_args": [
+        "PIP_INDEX_URL",
+        "PLAYWRIGHT_DOWNLOAD_HOST",
+        "NAG_DEBIAN_MIRROR",
+    ],
     "health_url": (
         f"http://127.0.0.1:{health_port}"
         "/mimo-console/api/auth/status"

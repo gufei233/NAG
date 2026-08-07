@@ -108,6 +108,9 @@ MIMO_CONSOLE_DEPLOYMENT_MODE=auto
 MIMO_CONSOLE_INSTANCE_ID=${kind}
 MIMO_CONSOLE_AGENT_SOCKET=/run/mimo-agent/agent.sock
 MIMO_CONSOLE_AGENT_TOKEN_FILE=/run/secrets/mimo-agent-token
+PIP_INDEX_URL=https://pypi.org/simple/
+PLAYWRIGHT_DOWNLOAD_HOST=
+NAG_DEBIAN_MIRROR=
 EOF
   if [[ "$kind" == "official" ]]; then
     cat >>"$environment" <<'EOF'

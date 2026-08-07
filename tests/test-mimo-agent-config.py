@@ -40,6 +40,11 @@ def main() -> None:
                 "image_repository": f"local/nag-test-nonebot-{kind}",
                 "override_file": ".mimo/docker-compose.override.yml",
                 "environment_file": ".env.prod",
+                "build_args": [
+                    "PIP_INDEX_URL",
+                    "PLAYWRIGHT_DOWNLOAD_HOST",
+                    "NAG_DEBIAN_MIRROR",
+                ],
                 "health_url": (
                     f"http://127.0.0.1:{port}"
                     "/mimo-console/api/auth/status"
@@ -77,6 +82,11 @@ def main() -> None:
         assert set(config.instances) == {"personal", "official"}
         assert config.instances["personal"].service == "nonebot"
         assert config.instances["official"].service == "nonebot"
+        assert config.instances["personal"].build_args == (
+            "PIP_INDEX_URL",
+            "PLAYWRIGHT_DOWNLOAD_HOST",
+            "NAG_DEBIAN_MIRROR",
+        )
         print("Mimo Agent configuration valid: personal, official")
 
 
