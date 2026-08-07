@@ -1871,6 +1871,7 @@ newest_env_file_for_project() {
   local proj="$1"
   local newest=""
   local name
+  local candidate
   local -a names=()
 
   case "$proj" in
@@ -1883,10 +1884,12 @@ newest_env_file_for_project() {
     nag-qqofficial) names=(qqofficial-nonebot.env qqofficial-direct.env) ;;
   esac
   for name in "${names[@]}"; do
-    if [[ -f "${STATE_DIR}/${name}" ]] \
-      && { [[ -z "$newest" ]] || [[ "${STATE_DIR}/${name}" -nt "$newest" ]]; }; then
-      newest="${STATE_DIR}/${name}"
-    fi
+    for candidate in "${STATE_DIR}/${name}" "${STATE_DIR}/${name}.tmp"; do
+      if [[ -f "$candidate" ]] \
+        && { [[ -z "$newest" ]] || [[ "$candidate" -nt "$newest" ]]; }; then
+        newest="$candidate"
+      fi
+    done
   done
   printf '%s' "$newest"
 }
@@ -2171,7 +2174,7 @@ uninstall_mode() {
       printf '  %d) %s（compose 项目：%s）\n' "$index" "$(project_label "$proj")" "$proj"
       index=$((index + 1))
     done
-    printf '  %d) 全部卸载\n' "$index"
+    printf '  %d) 全部已检测部署（随后选择是否删除持久化数据）\n' "$index"
     while true; do
       read -r -p "请选择要卸载的部署 [1-${index}]: " choice
       if [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= index)); then

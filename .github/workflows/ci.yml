@@ -22,6 +22,9 @@ jobs:
             bash -n "$f"
           done
 
+      - name: Uninstall state discovery
+        run: bash tests/test-uninstall-state-discovery.sh
+
       - name: Python syntax
         run: |
           python3 -m py_compile scripts/*.py tests/*.py
