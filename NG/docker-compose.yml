@@ -194,6 +194,8 @@ services:
       UV_INDEX: ${GSCORE_PYTHON_INDEX:-https://pypi.org/simple/}
       UV_NO_CONFIG: ${UV_NO_CONFIG:-0}
       PLAYWRIGHT_BROWSERS_PATH: ${PLAYWRIGHT_BROWSERS_PATH:-/ms-playwright}
+      PLAYWRIGHT_DOWNLOAD_HOST: ${PLAYWRIGHT_DOWNLOAD_HOST:-}
+      NAG_PLAYWRIGHT_NPMMIRROR_BASE: ${NAG_PLAYWRIGHT_NPMMIRROR_BASE:-}
       http_proxy: ${GSCORE_HTTP_PROXY:-}
       https_proxy: ${GSCORE_HTTPS_PROXY:-}
       no_proxy: ${GSCORE_NO_PROXY:-localhost,127.0.0.1,gscore,napcat,.local,cnb.cool,mirrors.aliyun.com,pypi.tuna.tsinghua.edu.cn,mirrors.volces.com}

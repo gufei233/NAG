@@ -988,6 +988,21 @@ playwright_npmmirror_base() {
   fi
 }
 
+run_gscore_xwuid_deps_init() {
+  local compose_function="$1"
+  local mirror_base
+
+  mirror_base="$(playwright_npmmirror_base)"
+  if [[ -n "$mirror_base" ]]; then
+    log "Playwright Chromium 使用国内镜像：$mirror_base"
+  else
+    log "Playwright Chromium 使用官方源"
+  fi
+  "$compose_function" --profile init run --rm \
+    -e "NAG_PLAYWRIGHT_NPMMIRROR_BASE=$mirror_base" \
+    gscore-xwuid-deps-init
+}
+
 debian_mirror() {
   if [[ "${NAG_DEBIAN_MIRROR+x}" == x ]]; then
     printf '%s' "$NAG_DEBIAN_MIRROR"
@@ -2846,7 +2861,7 @@ EOF
     fi
     if ((INSTALL_WUWA_DEPS)); then
       log "安装鸣潮插件依赖与 Chromium"
-      official_compose --profile init run --rm gscore-xwuid-deps-init
+      run_gscore_xwuid_deps_init official_compose
     fi
     if ((INSTALL_WUWA || INSTALL_WUWA_DEPS)); then
       log "以完成初始化的插件环境启动 GsCore"
@@ -4515,7 +4530,7 @@ PY
   fi
   if ((INSTALL_WUWA_DEPS)); then
     log "安装鸣潮插件依赖与 Chromium"
-    guided_compose --profile init run --rm gscore-xwuid-deps-init
+    run_gscore_xwuid_deps_init guided_compose
   fi
   if ((INSTALL_WUWA || INSTALL_WUWA_DEPS)); then
     log "以完成初始化的插件环境启动 GsCore"
@@ -6103,7 +6118,7 @@ fi
 
 if ((INSTALL_WUWA_DEPS)); then
   log "安装鸣潮插件额外依赖与 Chromium"
-  compose --profile init run --rm gscore-xwuid-deps-init
+  run_gscore_xwuid_deps_init compose
 fi
 
 if ((INSTALL_WUWA || INSTALL_WUWA_DEPS)); then
