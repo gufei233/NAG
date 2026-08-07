@@ -569,6 +569,8 @@ Mimo Console 默认跟随 `MimoKit/nonebot-plugin-mimo-console` 的 `master`
 
 镜像扩展预装 `ffmpeg`、Cairo 等常用媒体系统库；当锁定依赖中存在 Playwright 时才安装 Chromium。因此 `nonebot-plugin-parser[all]` 这类插件的 Python 依赖和浏览器依赖都会进入同一个可回滚镜像，而不是与 GsCore 共用不兼容的 Python 环境。
 
+大陆网络模式下，GsCore 额外依赖初始化会将 Playwright 的 Chrome-for-Testing 与常规浏览器资源路径映射到 npmmirror；镜像缺失或下载失败时自动回退官方源。可通过 `NAG_PLAYWRIGHT_NPMMIRROR_BASE` 覆盖镜像根地址，显式设为空字符串可禁用。
+
 注意：个人 NB 是 OneBot v11 适配器，官方 NB 是 adapter-qq——给官方实例装插件前先确认其支持 QQ 官方适配器；AstrBot 与个人 NB 同时收到普通消息，避免两边安装功能重叠的插件。
 
 NoneBot 命令前缀默认为 `/`，可通过私有环境文件中的 `NONEBOT_COMMAND_START` 修改（逗号分隔多个前缀，如 `#` 或 `#,/`；空串元素表示允许无前缀命令）。修改 `.installer` 私有 env 后重跑安装器即可生效，安装器重跑时会保留该设置。与 AstrBot 并存时建议 NB 使用不同前缀（如 `#`）以减少命令重叠。

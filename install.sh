@@ -37,6 +37,7 @@ readonly CN_UV_PYTHON_INSTALL_MIRROR_DEFAULT="https://registry.npmmirror.com/-/b
 # npmmirror can lag behind new Playwright Chromium revisions and return 404.
 # New installs use the official host; existing custom mirrors fall back there.
 readonly CN_PLAYWRIGHT_DOWNLOAD_HOST_DEFAULT=""
+readonly CN_PLAYWRIGHT_NPMMIRROR_BASE_DEFAULT="https://registry.npmmirror.com/-/binary"
 readonly CN_DEBIAN_MIRROR_DEFAULT="mirrors.aliyun.com"
 readonly CN_APT_MIRROR_BASE_DEFAULT="https://mirrors.aliyun.com"
 readonly CN_GITHUB_PROXY_PREFIX_DEFAULT="https://ghfast.top/"
@@ -353,7 +354,8 @@ QQ 官方凭据可通过环境变量 QQ_APP_ID、QQ_APP_SECRET、QQ_TOKEN（仅 
 提供，以实现无人值守安装。个人 QQ 登录与 GsCore 管理员注册仍需在 WebUI 手动完成。
 安装前会自动检测 Docker 环境，缺失时可自动安装（大陆网络自动改用国内镜像源）。
 镜像可通过 NAG_APT_MIRROR_BASE、NAG_PYTHON_INDEX、NAG_UV_PYTHON_INSTALL_MIRROR、
-NAG_PLAYWRIGHT_DOWNLOAD_HOST、NAG_DEBIAN_MIRROR、NAG_GITHUB_PROXY_PREFIX 覆盖；
+NAG_PLAYWRIGHT_DOWNLOAD_HOST、NAG_PLAYWRIGHT_NPMMIRROR_BASE、
+NAG_DEBIAN_MIRROR、NAG_GITHUB_PROXY_PREFIX 覆盖；
 除 NAG_PYTHON_INDEX 外，显式设为空字符串可分别禁用对应镜像。
 若 daemon.json 的 registry-mirrors 只能取到 manifest 却拉不动镜像层，可设置
 NAG_DOCKER_REGISTRY_PREFIX=dockerproxy.net 直接改写 Docker Hub 镜像名前缀。
@@ -968,6 +970,16 @@ playwright_download_host() {
     printf '%s' "$NAG_PLAYWRIGHT_DOWNLOAD_HOST"
   elif cn_enabled; then
     printf '%s' "$CN_PLAYWRIGHT_DOWNLOAD_HOST_DEFAULT"
+  fi
+}
+
+playwright_npmmirror_base() {
+  if [[ "${NAG_PLAYWRIGHT_NPMMIRROR_BASE+x}" == x ]]; then
+    printf '%s' "$NAG_PLAYWRIGHT_NPMMIRROR_BASE"
+  elif [[ "${NAG_PLAYWRIGHT_DOWNLOAD_HOST+x}" == x ]]; then
+    return 0
+  elif cn_enabled; then
+    printf '%s' "$CN_PLAYWRIGHT_NPMMIRROR_BASE_DEFAULT"
   fi
 }
 
@@ -2754,6 +2766,7 @@ NONEBOT_COMMAND_START=$(v="$(env_value NONEBOT_COMMAND_START "$env_file")"; prin
 UV_NO_CONFIG=0
 PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 PLAYWRIGHT_DOWNLOAD_HOST=$(playwright_download_host)
+NAG_PLAYWRIGHT_NPMMIRROR_BASE=$(playwright_npmmirror_base)
 NAG_DEBIAN_MIRROR=$(debian_mirror)
 GSCORE_XWUID_PYTHON_PACKAGES=playwright opencv-python fonttools pypinyin
 EOF
@@ -4142,6 +4155,7 @@ NONEBOT_COMMAND_START=$(v="$(env_value NONEBOT_COMMAND_START "$existing_env_file
 UV_NO_CONFIG=0
 PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 PLAYWRIGHT_DOWNLOAD_HOST=$(playwright_download_host)
+NAG_PLAYWRIGHT_NPMMIRROR_BASE=$(playwright_npmmirror_base)
 NAG_DEBIAN_MIRROR=$(debian_mirror)
 GSCORE_XWUID_PYTHON_PACKAGES=playwright opencv-python fonttools pypinyin
 EOF
@@ -5714,6 +5728,7 @@ GSCORE_WS_TOKEN=$GSCORE_WS_TOKEN
 UV_NO_CONFIG=0
 PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 PLAYWRIGHT_DOWNLOAD_HOST=$(playwright_download_host)
+NAG_PLAYWRIGHT_NPMMIRROR_BASE=$(playwright_npmmirror_base)
 NAG_DEBIAN_MIRROR=$(debian_mirror)
 GSCORE_XWUID_PYTHON_PACKAGES=playwright opencv-python fonttools pypinyin
 EOF
